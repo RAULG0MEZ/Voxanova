@@ -30,12 +30,12 @@ npm run format     # formatea todo el código con Prettier
 
 ```
 Voxanova/
-├── src/                  # Diseño en React (la "verdad" visual hoy)
+├── src/                  # UI React v2 limpia
 │   ├── main.jsx          # Punto de entrada
-│   ├── App.jsx           # Componente raíz (estado global + composición)
-│   ├── components/       # Piezas de UI (un componente por archivo)
-│   ├── utils/            # Funciones puras (cálculos, formatos, valores iniciales)
-│   └── styles.css        # Estilos (CSS plano, ~5,731 líneas — frágil)
+│   ├── App.jsx           # Componente raíz y controles
+│   ├── nativeBridge.js   # Comunicación UI -> JUCE
+│   ├── pluginContract.js # Parámetros, defaults y listas compartidas
+│   └── styles.css        # Estilos nuevos, sin la cascada legacy
 ├── plugin-shell/         # Plugin nativo C++/JUCE (se conecta DESPUÉS)
 ├── designs/              # Referencias visuales (mockups, knobs, etc.)
 ├── docs/                 # Documentación auxiliar (limpieza pendiente, etc.)
@@ -61,7 +61,7 @@ Voxanova/
 2. Cuando algo se modifique, se modifica **en su lugar**: nada de archivos
    nuevos dejando huérfanos viejos.
 3. Los **valores iniciales** del plugin (gains, thresholds, defaults de
-   reverb/delay, etc.) viven en `src/utils/initialState.js`. Si quieres
-   cambiar un valor por defecto, ese es el único lugar.
+   reverb/delay, etc.) viven en `src/pluginContract.js`. Si quieres cambiar un
+   valor por defecto, ese es el primer lugar que debes revisar.
 4. Cada cambio que se haga debe quedar reflejado en este README o en el
    `CLAUDE.md` si afecta la arquitectura.

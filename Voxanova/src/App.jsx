@@ -1,1150 +1,851 @@
-// Componente raíz: define el estado global del plugin y compone la UI.
-// Los valores iniciales viven en utils/initialState.js.
-// Toda la lógica visual vive en src/components/ y src/utils/.
-
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import packageMeta from "../package.json";
 import {
-  PLUGIN_WIDTH,
   PLUGIN_HEIGHT,
-  initialIO,
-  initialCompressors,
-  initialGlueBands,
-  initialGlueMultibandOn,
-  initialGateThreshold,
-  initialStereoWidth,
-  initialStereoLowBypass,
-  initialSaturation,
-  initialReverb,
-  initialDelay,
-  initialEffectToggles
-} from "./utils/initialState.js";
-import { EqPanel } from "./components/EqPanel.jsx";
-import { ModuleCard } from "./components/ModuleCard.jsx";
-import { DynamicsRack } from "./components/Faders.jsx";
+  PLUGIN_WIDTH,
+  booleanParameters,
+  defaultValues,
+  delayDivisions,
+  delayModes,
+  delayStyles,
+  noteModes,
+  reverbModes,
+  reverbPredelayDivisions,
+  saturationModes
+} from "./pluginContract.js";
+import { hasNativeBackend, sendNativeEditorSize, sendNativeParameter } from "./nativeBridge.js";
 
-const modules = [
-  { title: "PRE-EQ", color: "cyan", type: "curve", active: true },
-  { title: "PEAK TAMER", color: "blue-soft", type: "dualFader", active: true },
-  { title: "GLUE", color: "blue", type: "dualFader", active: true },
-  { title: "IN YOUR FACE", color: "blue-deep", type: "dualFader", active: true },
-  { title: "POST-EQ", color: "cyan", type: "curve", active: true },
-  { title: "GATE", color: "blue", type: "gateStereo", active: true },
-  { title: "STEREO", color: "blue", type: "stereo", active: false },
-  { title: "EFX", color: "blue", type: "effects", active: true }
-];
-
-const windowSizeOptions = [
-  { id: "mini", label: "Mini", scale: 0.65 },
-  { id: "compact", label: "Compact", scale: 0.8 },
+const booleanParameterSet = new Set(booleanParameters);
+const sizeOptions = [
+  { id: "compact", label: "Compact", scale: 0.82 },
   { id: "default", label: "Default", scale: 1 },
-  { id: "large", label: "Large", scale: 1.15 }
+  { id: "large", label: "Large", scale: 1.12 }
 ];
-
-const appVersion = packageMeta.version;
-const nativeVersion = appVersion;
-const basePageSizeLabel = `${PLUGIN_WIDTH} x ${PLUGIN_HEIGHT}`;
-const COMPRESSOR_MIN_DB = -60;
-const GLUE_BAND_MIN_DB = -48;
-const COMPRESSOR_MAX_DB = 0;
-const moduleParameterIds = {
-  "PEAK TAMER": "peakEnabled",
-  GLUE: "glueEnabled",
-  "IN YOUR FACE": "faceEnabled",
-  GATE: "gateEnabled",
-  STEREO: "stereoEnabled"
-};
-const effectParameterIds = {
-  delay: "delayEnabled",
-  reverb: "reverbEnabled"
-};
-const delayModeToNative = { NORMAL: 0, WIDE: 1, "PING-PONG": 2 };
-const nativeToDelayMode = ["NORMAL", "WIDE", "PING-PONG"];
-const delayNoteModeToNative = { NOTE: 0, DOT: 1, TRIP: 2 };
-const nativeToDelayNoteMode = ["NOTE", "DOT", "TRIP"];
-const delayStyleOptions = [
-  "Clean",
-  "Digital",
-  "Tape",
-  "Studio Tape",
-  "Old Tape",
-  "Cheap Tape",
-  "Analog",
-  "Radio",
-  "Telephone",
-  "Dirty",
-  "Ambient"
-];
-const delayStyleToNative = Object.fromEntries(delayStyleOptions.map((style, index) => [style, index]));
-const saturationParameterMap = {
-  pre: { mode: "preSaturationMode", amount: "preSaturationAmount" },
-  post: { mode: "postSaturationMode", amount: "postSaturationAmount" }
-};
-const reverbModeOptions = [
-  "Concert Hall",
-  "Bright Hall",
-  "Plate",
-  "Room",
-  "Chamber",
-  "Random Space",
-  "Chorus Space",
-  "Ambience",
-  "Sanctuary",
-  "Dirty Hall",
-  "Dirty Plate",
-  "Smooth Plate",
-  "Smooth Room",
-  "Smooth Random",
-  "Nonlin",
-  "Chaotic Chamber",
-  "Chaotic Hall",
-  "Chaotic Neutral",
-  "Cathedral",
-  "Palace",
-  "Chamber1979",
-  "Hall1984"
-];
-const reverbParameterMap = {
-  mix: "reverbMix",
-  decay: "reverbDecay",
-  size: "reverbSize",
-  predelay: "reverbPredelay",
-  lowCut: "reverbLowCut",
-  highCut: "reverbHighCut",
-  modeIndex: "reverbMode",
-  bpmActive: "reverbSync",
-  noteMode: "reverbNoteMode",
-  decaySync: "reverbDecaySync",
-  predelaySync: "reverbPredelaySync",
-  decayDivisionIndex: "reverbDecayDivision",
-  predelayDivisionIndex: "reverbPredelayDivision"
-};
-const delayParameterMap = {
-  mix: "delayMix",
-  feedback: "delayFeedback",
-  lowCut: "delayLowCut",
-  highCut: "delayHighCut",
-  bpmActive: "delaySync",
-  divisionIndex: "delayDivision",
-  noteMode: "delayNoteMode",
-  timeMs: "delayTimeMs",
-  mode: "delayMode",
-  postReverb: "delayPostReverb",
-  style: "delayStyle"
-};
 
 const emptyMeters = {
   input: [0, 0],
   output: [0, 0],
   inputChannels: 2,
-  outputChannels: 2
-};
-
-const emptyReductions = {
-  gate: 0,
-  peak: 0,
-  glue: 0,
-  face: 0
-};
-
-const emptyReductionDbs = {
-  gate: 0,
-  peak: 0,
-  glue: 0,
-  face: 0
-};
-
-const emptyFaderLevels = {
-  gate: 0,
-  peak: 0,
-  glue: 0,
-  face: 0
+  outputChannels: 2,
+  peakLevel: 0,
+  glueLevel: 0,
+  faceLevel: 0,
+  gateLevel: 0,
+  peakReduction: 0,
+  glueReduction: 0,
+  faceReduction: 0,
+  gateReduction: 0,
+  peakReductionDb: 0,
+  glueReductionDb: 0,
+  faceReductionDb: 0,
+  gateReductionDb: 0,
+  hostBpm: 120
 };
 
 function clamp(value, min, max) {
-  return Math.min(Math.max(value, min), max);
+  return Math.max(min, Math.min(max, value));
 }
 
-function getStoredWindowSizeId() {
-  try {
-    return localStorage.getItem("voxanova-window-size") || "default";
-  } catch {
-    return "default";
-  }
+function toNumber(value) {
+  return Number.parseFloat(value);
 }
 
-function getWindowSizeOption(id) {
-  return windowSizeOptions.find((option) => option.id === id) || windowSizeOptions[1];
+function dbLabel(value) {
+  if (value <= -79.95) return "-inf dB";
+  return `${value > 0 ? "+" : ""}${Number(value).toFixed(1)} dB`;
 }
 
-function formatMeterDb(level) {
-  if (level <= 0.001) return "-inf dB";
-  const db = level * 72 - 60;
-  return `${db.toFixed(1)} dB`;
+function shortDbLabel(value) {
+  if (value <= -79.95) return "-inf";
+  return `${Math.round(value)} dB`;
 }
 
-function percentToDb(value, min, max) {
-  return min + (clamp(value, 0, 100) / 100) * (max - min);
+function percentLabel(value) {
+  return `${Math.round(value)}%`;
 }
 
-function dbToPercent(value, min, max) {
+function hzLabel(value) {
+  return `${Math.round(value)} Hz`;
+}
+
+function msLabel(value) {
+  return `${Math.round(value)} ms`;
+}
+
+function meterDbLabel(level) {
+  if (level <= 0.001) return "-inf";
+  return `${(level * 72 - 60).toFixed(1)} dB`;
+}
+
+function reverbDecayLabel(value) {
+  const norm = clamp(value / 100, 0, 1);
+  const seconds = 0.2 + ((90 ** norm - 1) / 89) * 17.8;
+  return `${seconds >= 10 ? seconds.toFixed(1) : seconds.toFixed(2)} s`;
+}
+
+function controlPercent(value, min, max) {
   return clamp(((value - min) / (max - min)) * 100, 0, 100);
 }
 
-function nativeApiUrl(path, params) {
-  const root = window.__JUCE__?.backend ? window.location.origin : "";
-  const query = new URLSearchParams({ ...params, t: String(Date.now()) });
-  return `${root}${path}?${query.toString()}`;
+function optionList(labels) {
+  return labels.map((label, value) => ({ label, value }));
 }
 
-function pokeNativeResource(url) {
-  const image = new Image();
-  image.src = url;
+function updateValuesFromPayload(current, payload) {
+  let changed = false;
+  const next = { ...current };
 
-  const frame = document.createElement("iframe");
-  frame.style.display = "none";
-  frame.src = url;
-  document.body.appendChild(frame);
-  window.setTimeout(() => frame.remove(), 1000);
-}
-
-const pendingNativeParameters = new Map();
-let pendingNativeParameterFrame = 0;
-
-function flushNativeParameters() {
-  pendingNativeParameterFrame = 0;
-  const entries = Array.from(pendingNativeParameters.entries());
-  pendingNativeParameters.clear();
-
-  entries.forEach(([id, value]) => {
-    transmitNativeParameter(id, value);
-  });
-}
-
-function transmitNativeParameter(id, value) {
-  const url = nativeApiUrl("/api/setParameter", { id, value: String(value) });
-
-  window.__voxanovaParameterQueue = window.__voxanovaParameterQueue || [];
-  window.__voxanovaParameterQueue.push({ id, value });
-
-  try {
-    window.__JUCE__?.backend?.emitEvent?.("voxanovaSetParameter", { id, value });
-  } catch {
-    // Si el puente nativo no existe, usamos los fallbacks de recurso.
-  }
-
-  pokeNativeResource(url);
-
-  fetch(url, {
-    cache: "no-store"
-  })
-    .then((response) => (response.ok ? response.json() : Promise.reject(response)))
-    .then((payload) => {
-      if (payload?.ok === false) throw new Error(payload.error || "native parameter rejected");
-    })
-    .catch(() => {
-      // En navegador normal no existe el endpoint nativo; la UI sigue funcionando visualmente.
-    });
-}
-
-function sendNativeParameter(id, value) {
-  pendingNativeParameters.set(id, value);
-
-  if (pendingNativeParameterFrame) return;
-
-  const scheduleFrame = window.requestAnimationFrame || ((callback) => window.setTimeout(callback, 16));
-  pendingNativeParameterFrame = scheduleFrame(flushNativeParameters);
-}
-
-function sendNativeEditorSize(option) {
-  const width = Math.round(PLUGIN_WIDTH * option.scale);
-  const height = Math.round(PLUGIN_HEIGHT * option.scale);
-  const url = nativeApiUrl("/api/setEditorSize", {
-    scale: String(option.scale),
-    width: String(width),
-    height: String(height)
+  Object.keys(defaultValues).forEach((id) => {
+    if (typeof payload[id] !== "number") return;
+    changed = true;
+    next[id] = booleanParameterSet.has(id) ? payload[id] >= 0.5 : payload[id];
   });
 
-  try {
-    window.__JUCE__?.backend?.emitEvent?.("voxanovaSetEditorSize", {
-      scale: option.scale,
-      width,
-      height
-    });
-  } catch {
-    // Si el puente nativo no existe, usamos los fallbacks de recurso.
-  }
-
-  pokeNativeResource(url);
-
-  fetch(url, { cache: "no-store" }).catch(() => {
-    // En navegador normal no existe el endpoint nativo; el preview usa escala visual.
-  });
+  return changed ? next : current;
 }
 
-function App() {
-  // Toggles de cada módulo (encendido/apagado), inicializados desde el array.
-  const [toggles, setToggles] = useState(() =>
-    Object.fromEntries(modules.map((m) => [m.title, m.active]))
+function Toggle({ active, label, onChange }) {
+  return (
+    <button
+      className={`toggle ${active ? "is-on" : ""}`}
+      type="button"
+      aria-pressed={active}
+      onClick={() => onChange(!active)}
+    >
+      <span />
+      {label}
+    </button>
+  );
+}
+
+function Meter({ label, levels, channels, tone = "blue" }) {
+  const visible = channels > 1 ? [levels[0] ?? 0, levels[1] ?? 0] : [levels[0] ?? 0];
+  const peak = Math.max(0, ...visible);
+
+  return (
+    <div className={`meter meter-${tone}`}>
+      <div className="meter-head">
+        <span>{label}</span>
+        <strong>{meterDbLabel(peak)}</strong>
+      </div>
+      <div className={`meter-tube ${channels > 1 ? "is-stereo" : "is-mono"}`}>
+        {visible.map((level, index) => (
+          <span key={index} style={{ height: `${clamp(level, 0, 1) * 100}%` }} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SliderControl({
+  label,
+  value,
+  min,
+  max,
+  step = 1,
+  disabled = false,
+  formatter = percentLabel,
+  onChange
+}) {
+  const percent = controlPercent(value, min, max);
+
+  return (
+    <label className={`control ${disabled ? "is-disabled" : ""}`}>
+      <span className="control-label">{label}</span>
+      <span className="control-value">{formatter(value)}</span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        disabled={disabled}
+        style={{ "--fill": `${percent}%` }}
+        onChange={(event) => onChange(toNumber(event.target.value))}
+      />
+    </label>
+  );
+}
+
+function KnobControl({
+  label,
+  value,
+  min,
+  max,
+  step = 1,
+  disabled = false,
+  formatter = percentLabel,
+  onChange
+}) {
+  const percent = controlPercent(value, min, max);
+  const angle = -135 + (percent / 100) * 270;
+
+  return (
+    <label className={`knob-control ${disabled ? "is-disabled" : ""}`}>
+      <span className="knob-label">{label}</span>
+      <span className="knob-shell" style={{ "--arc": `${percent}%`, "--angle": `${angle}deg` }}>
+        <span className="knob-face">
+          <span />
+        </span>
+      </span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        disabled={disabled}
+        onChange={(event) => onChange(toNumber(event.target.value))}
+      />
+      <strong>{formatter(value)}</strong>
+    </label>
+  );
+}
+
+function SelectControl({ label, value, options, disabled = false, onChange }) {
+  return (
+    <label className={`select-control ${disabled ? "is-disabled" : ""}`}>
+      <span>{label}</span>
+      <select
+        disabled={disabled}
+        value={value}
+        onChange={(event) => onChange(toNumber(event.target.value))}
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function Reduction({ label, value, db }) {
+  return (
+    <div className="reduction">
+      <span>{label}</span>
+      <div>
+        <span style={{ width: `${clamp(value, 0, 100)}%` }} />
+      </div>
+      <strong>{db > 0.05 ? `-${db.toFixed(db >= 10 ? 0 : 1)} dB` : "0 dB"}</strong>
+    </div>
+  );
+}
+
+function Panel({ title, kicker, active = true, action, children }) {
+  return (
+    <section className={`panel ${active ? "" : "is-muted"}`}>
+      <header className="panel-head">
+        <div>
+          <span>{kicker}</span>
+          <h2>{title}</h2>
+        </div>
+        {action}
+      </header>
+      {children}
+    </section>
+  );
+}
+
+function DynamicsStrip({ title, enabled, amountLabel, level, reduction, reductionDb, children }) {
+  return (
+    <div className={`dynamics-strip ${enabled ? "" : "is-muted"}`}>
+      <div className="strip-title">
+        <h3>{title}</h3>
+        <span>{amountLabel}</span>
+      </div>
+      {children}
+      <Reduction label="Gain reduction" value={reduction} db={reductionDb} />
+      <div className="activity-line">
+        <span style={{ width: `${clamp(level, 0, 1) * 100}%` }} />
+      </div>
+    </div>
+  );
+}
+
+export default function App() {
+  const [values, setValues] = useState(defaultValues);
+  const [meters, setMeters] = useState(emptyMeters);
+  const [scale, setScale] = useState(1);
+  const [nativeOnline, setNativeOnline] = useState(hasNativeBackend);
+
+  const selectOptions = useMemo(
+    () => ({
+      saturation: optionList(saturationModes),
+      note: optionList(noteModes),
+      delayDivision: optionList(delayDivisions),
+      reverbPredelayDivision: optionList(reverbPredelayDivisions),
+      delayMode: optionList(delayModes),
+      delayStyle: optionList(delayStyles),
+      reverbMode: optionList(reverbModes)
+    }),
+    []
   );
 
-  // Niveles y gains de entrada/salida.
-  const [meters, setMeters] = useState(emptyMeters);
-  const [reductions, setReductions] = useState(emptyReductions);
-  const [reductionDbs, setReductionDbs] = useState(emptyReductionDbs);
-  const [faderLevels, setFaderLevels] = useState(emptyFaderLevels);
-  const [inputGain, setInputGain] = useState(initialIO.inputGain);
-  const [outputGain, setOutputGain] = useState(initialIO.outputGain);
-
-  // Compresores: peakTamer, glue, inYourFace.
-  const [peakTamer, setPeakTamer] = useState(initialCompressors.peakTamer);
-  const [glue, setGlue] = useState(initialCompressors.glue);
-  const [glueMultibandOn, setGlueMultibandOn] = useState(initialGlueMultibandOn);
-  const [glueBands, setGlueBands] = useState(() => ({ ...initialGlueBands }));
-  const [inYourFace, setInYourFace] = useState(initialCompressors.inYourFace);
-
-  // Gate y Stereo (controles individuales).
-  const [gateThreshold, setGateThreshold] = useState(initialGateThreshold);
-  const [stereoWidth, setStereoWidth] = useState(initialStereoWidth);
-  const [stereoLowBypass, setStereoLowBypass] = useState(initialStereoLowBypass);
-  const [saturation, setSaturation] = useState(initialSaturation);
-
-  // Efectos como objetos agrupados.
-  const [reverb, setReverb] = useState(initialReverb);
-  const [delay, setDelay] = useState(initialDelay);
-  const [hostBpm, setHostBpm] = useState(120);
-  const [effectToggles, setEffectToggles] = useState(initialEffectToggles);
-
-  // Escala visual (responsive).
-  const [pluginScale, setPluginScale] = useState(1);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [windowSizeId, setWindowSizeId] = useState(getStoredWindowSizeId);
-  const menuRef = useRef(null);
-  const pendingNativeValuesRef = useRef({});
-  const resizeDragRef = useRef({ active: false, id: -1, x: 0, y: 0, scale: 1 });
-  const pendingEditorScaleRef = useRef(null);
-  const pendingEditorFrameRef = useRef(0);
-
-  // Estado expandido del EQ: el rack debe poder recuperar prioridad cuando el usuario vuelve a él.
-  const [eqExpanded, setEqExpanded] = useState(false);
-  const releaseEqExpansion = useCallback(() => {
-    setEqExpanded((current) => (current ? false : current));
+  useEffect(() => {
+    const updateNativeStatus = () => setNativeOnline(hasNativeBackend());
+    updateNativeStatus();
+    const timer = window.setInterval(updateNativeStatus, 1000);
+    return () => window.clearInterval(timer);
   }, []);
 
-  // Meters reales desde JUCE. En navegador normal se quedan en cero.
   useEffect(() => {
     const onMeterUpdate = (event) => {
       const payload = event.detail || {};
+
       setMeters({
         input: [payload.inputL ?? 0, payload.inputR ?? payload.inputL ?? 0],
         output: [payload.outputL ?? 0, payload.outputR ?? payload.outputL ?? 0],
         inputChannels: payload.inputChannels ?? 2,
-        outputChannels: payload.outputChannels ?? 2
-      });
-      setReductions({
-        gate: payload.gateGr ?? 0,
-        peak: payload.peakGr ?? 0,
-        glue: payload.glueGr ?? 0,
-        face: payload.faceGr ?? 0
-      });
-      setReductionDbs({
-        gate: payload.gateGrDb ?? 0,
-        peak: payload.peakGrDb ?? 0,
-        glue: payload.glueGrDb ?? 0,
-        face: payload.faceGrDb ?? 0
-      });
-      setFaderLevels({
-        gate: payload.gateLevel ?? 0,
-        peak: payload.peakLevel ?? 0,
-        glue: payload.glueLevel ?? 0,
-        face: payload.faceLevel ?? 0
-      });
-      if (typeof payload.hostBpm === "number") {
-        setHostBpm(clamp(payload.hostBpm, 20, 300));
-      }
-
-      const now = performance.now();
-      const pending = pendingNativeValuesRef.current;
-      const isPending = (id) => pending[id] && pending[id].until >= now;
-
-      if (typeof payload.inputGain === "number" && !isPending("inputGain")) {
-        setInputGain(payload.inputGain);
-      }
-
-      if (typeof payload.outputGain === "number" && !isPending("outputGain")) {
-        setOutputGain(payload.outputGain);
-      }
-
-      if (typeof payload.gateThreshold === "number" && !isPending("gateThreshold")) {
-        setGateThreshold(dbToPercent(payload.gateThreshold, -80, 0));
-      }
-
-      if (typeof payload.stereoWidth === "number" && !isPending("stereoWidth")) {
-        setStereoWidth(clamp(payload.stereoWidth, 0, 100));
-      }
-
-      if (typeof payload.stereoLowBypass === "number" && !isPending("stereoLowBypass")) {
-        setStereoLowBypass(clamp(payload.stereoLowBypass, 0, 500));
-      }
-
-      Object.entries(saturationParameterMap).forEach(([stage, ids]) => {
-        if (typeof payload[ids.mode] === "number" && !isPending(ids.mode)) {
-          setSaturation((current) => ({
-            ...current,
-            [stage]: { ...current[stage], mode: Math.round(clamp(payload[ids.mode], 0, 3)) }
-          }));
-        }
-
-        if (typeof payload[ids.amount] === "number" && !isPending(ids.amount)) {
-          setSaturation((current) => ({
-            ...current,
-            [stage]: { ...current[stage], amount: clamp(payload[ids.amount], 0, 100) }
-          }));
-        }
+        outputChannels: payload.outputChannels ?? 2,
+        peakLevel: payload.peakLevel ?? 0,
+        glueLevel: payload.glueLevel ?? 0,
+        faceLevel: payload.faceLevel ?? 0,
+        gateLevel: payload.gateLevel ?? 0,
+        peakReduction: payload.peakGr ?? 0,
+        glueReduction: payload.glueGr ?? 0,
+        faceReduction: payload.faceGr ?? 0,
+        gateReduction: payload.gateGr ?? 0,
+        peakReductionDb: payload.peakGrDb ?? 0,
+        glueReductionDb: payload.glueGrDb ?? 0,
+        faceReductionDb: payload.faceGrDb ?? 0,
+        gateReductionDb: payload.gateGrDb ?? 0,
+        hostBpm: payload.hostBpm ?? 120
       });
 
-      Object.entries(moduleParameterIds).forEach(([title, parameterId]) => {
-        if (typeof payload[parameterId] === "number" && !isPending(parameterId)) {
-          setToggles((current) => ({ ...current, [title]: payload[parameterId] >= 0.5 }));
-        }
-      });
-
-      if (typeof payload.peakThreshold === "number" && !isPending("peakThreshold")) {
-        setPeakTamer((current) => ({
-          ...current,
-          thr: dbToPercent(payload.peakThreshold, COMPRESSOR_MIN_DB, COMPRESSOR_MAX_DB)
-        }));
-      }
-
-      if (typeof payload.glueThreshold === "number" && !isPending("glueThreshold")) {
-        setGlue((current) => ({
-          ...current,
-          thr: dbToPercent(payload.glueThreshold, COMPRESSOR_MIN_DB, COMPRESSOR_MAX_DB)
-        }));
-      }
-
-      if (typeof payload.glueMultiband === "number" && !isPending("glueMultiband")) {
-        setGlueMultibandOn(payload.glueMultiband >= 0.5);
-      }
-
-      const glueBandPayloadMap = {
-        low: "glueLowThreshold",
-        lowMid: "glueLowMidThreshold",
-        highMid: "glueHighMidThreshold",
-        high: "glueAirThreshold"
-      };
-
-      Object.entries(glueBandPayloadMap).forEach(([band, parameterId]) => {
-        if (typeof payload[parameterId] === "number" && !isPending(parameterId)) {
-          setGlueBands((current) => ({
-            ...current,
-            [band]: dbToPercent(payload[parameterId], GLUE_BAND_MIN_DB, COMPRESSOR_MAX_DB)
-          }));
-        }
-      });
-
-      if (typeof payload.faceThreshold === "number" && !isPending("faceThreshold")) {
-        setInYourFace((current) => ({
-          ...current,
-          thr: clamp(payload.faceThreshold, 0, 100)
-        }));
-      }
-
-      if (typeof payload.reverbMix === "number" && !isPending("reverbMix")) {
-        setReverb((current) => ({ ...current, mix: clamp(payload.reverbMix, 0, 100) }));
-      }
-
-      if (typeof payload.reverbDecay === "number" && !isPending("reverbDecay")) {
-        setReverb((current) => ({ ...current, decay: clamp(payload.reverbDecay, 0, 100) }));
-      }
-
-      if (typeof payload.reverbSize === "number" && !isPending("reverbSize")) {
-        setReverb((current) => ({ ...current, size: clamp(payload.reverbSize, 0, 100) }));
-      }
-
-      if (typeof payload.reverbPredelay === "number" && !isPending("reverbPredelay")) {
-        setReverb((current) => ({ ...current, predelay: clamp(payload.reverbPredelay, 0, 100) }));
-      }
-
-      if (typeof payload.reverbLowCut === "number" && !isPending("reverbLowCut")) {
-        setReverb((current) => ({ ...current, lowCut: clamp(payload.reverbLowCut, 0, 100) }));
-      }
-
-      if (typeof payload.reverbHighCut === "number" && !isPending("reverbHighCut")) {
-        setReverb((current) => ({ ...current, highCut: clamp(payload.reverbHighCut, 0, 100) }));
-      }
-
-      if (typeof payload.reverbMode === "number" && !isPending("reverbMode")) {
-        setReverb((current) => ({
-          ...current,
-          modeIndex: Math.round(clamp(payload.reverbMode, 0, reverbModeOptions.length - 1))
-        }));
-      }
-
-      if (typeof payload.reverbSync === "number" && !isPending("reverbSync")) {
-        setReverb((current) => ({ ...current, bpmActive: payload.reverbSync >= 0.5 }));
-      }
-
-      if (typeof payload.reverbNoteMode === "number" && !isPending("reverbNoteMode")) {
-        setReverb((current) => ({
-          ...current,
-          noteMode: nativeToDelayNoteMode[Math.round(clamp(payload.reverbNoteMode, 0, 2))] ?? "NOTE"
-        }));
-      }
-
-      if (typeof payload.reverbDecaySync === "number" && !isPending("reverbDecaySync")) {
-        setReverb((current) => ({ ...current, decaySync: payload.reverbDecaySync >= 0.5 }));
-      }
-
-      if (typeof payload.reverbPredelaySync === "number" && !isPending("reverbPredelaySync")) {
-        setReverb((current) => ({ ...current, predelaySync: payload.reverbPredelaySync >= 0.5 }));
-      }
-
-      if (typeof payload.reverbDecayDivision === "number" && !isPending("reverbDecayDivision")) {
-        setReverb((current) => ({
-          ...current,
-          decayDivisionIndex: Math.round(clamp(payload.reverbDecayDivision, 0, 6))
-        }));
-      }
-
-      if (typeof payload.reverbPredelayDivision === "number" && !isPending("reverbPredelayDivision")) {
-        setReverb((current) => ({
-          ...current,
-          predelayDivisionIndex: Math.round(clamp(payload.reverbPredelayDivision, 0, 7))
-        }));
-      }
-
-      if (typeof payload.delayMix === "number" && !isPending("delayMix")) {
-        setDelay((current) => ({ ...current, mix: clamp(payload.delayMix, 0, 100) }));
-      }
-
-      if (typeof payload.delayFeedback === "number" && !isPending("delayFeedback")) {
-        setDelay((current) => ({ ...current, feedback: clamp(payload.delayFeedback, 0, 100) }));
-      }
-
-      if (typeof payload.delayLowCut === "number" && !isPending("delayLowCut")) {
-        setDelay((current) => ({ ...current, lowCut: clamp(payload.delayLowCut, 0, 100) }));
-      }
-
-      if (typeof payload.delayHighCut === "number" && !isPending("delayHighCut")) {
-        setDelay((current) => ({ ...current, highCut: clamp(payload.delayHighCut, 0, 100) }));
-      }
-
-      if (typeof payload.delaySync === "number" && !isPending("delaySync")) {
-        setDelay((current) => ({ ...current, bpmActive: payload.delaySync >= 0.5 }));
-      }
-
-      if (typeof payload.delayDivision === "number" && !isPending("delayDivision")) {
-        setDelay((current) => ({ ...current, divisionIndex: Math.round(clamp(payload.delayDivision, 0, 6)) }));
-      }
-
-      if (typeof payload.delayNoteMode === "number" && !isPending("delayNoteMode")) {
-        setDelay((current) => ({
-          ...current,
-          noteMode: nativeToDelayNoteMode[Math.round(clamp(payload.delayNoteMode, 0, 2))] ?? "NOTE"
-        }));
-      }
-
-      if (typeof payload.delayTimeMs === "number" && !isPending("delayTimeMs")) {
-        setDelay((current) => ({ ...current, timeMs: clamp(payload.delayTimeMs, 1, 2000) }));
-      }
-
-      if (typeof payload.delayMode === "number" && !isPending("delayMode")) {
-        setDelay((current) => ({
-          ...current,
-          mode: nativeToDelayMode[Math.round(clamp(payload.delayMode, 0, 2))] ?? "NORMAL"
-        }));
-      }
-
-      if (typeof payload.delayPostReverb === "number" && !isPending("delayPostReverb")) {
-        setDelay((current) => ({ ...current, postReverb: payload.delayPostReverb >= 0.5 }));
-      }
-
-      if (typeof payload.delayStyle === "number" && !isPending("delayStyle")) {
-        setDelay((current) => ({
-          ...current,
-          style: delayStyleOptions[Math.round(clamp(payload.delayStyle, 0, delayStyleOptions.length - 1))] ?? "Clean"
-        }));
-      }
-
-      Object.entries(effectParameterIds).forEach(([key, parameterId]) => {
-        if (typeof payload[parameterId] === "number" && !isPending(parameterId)) {
-          setEffectToggles((current) => ({
-            ...current,
-            [key]: payload[parameterId] >= 0.5 ? current[key] === "aux" ? "aux" : "on" : "off"
-          }));
-        }
-      });
+      setValues((current) => updateValuesFromPayload(current, payload));
     };
 
     window.addEventListener("voxanovaMeterUpdate", onMeterUpdate);
-
-    return () => {
-      window.removeEventListener("voxanovaMeterUpdate", onMeterUpdate);
-    };
+    return () => window.removeEventListener("voxanovaMeterUpdate", onMeterUpdate);
   }, []);
 
-  // Escala el plugin para que quepa en la ventana sin recortarse.
-  useEffect(() => {
-    const updateScale = () => {
-      const viewportWidth = window.innerWidth;
-      const viewportHeight = window.innerHeight;
-      const nativeScale = Math.min(viewportWidth / PLUGIN_WIDTH, viewportHeight / PLUGIN_HEIGHT);
-
-      if (window.__JUCE__?.backend) {
-        setPluginScale(clamp(nativeScale, 0.6, 1.2));
-        return;
-      }
-
-      if (viewportWidth >= PLUGIN_WIDTH && viewportHeight >= PLUGIN_HEIGHT) {
-        setPluginScale(1);
-        return;
-      }
-
-      const maxWidth = Math.max(viewportWidth - 24, 320);
-      const maxHeight = Math.max(viewportHeight - 24, 320);
-      setPluginScale(Math.min(maxWidth / PLUGIN_WIDTH, maxHeight / PLUGIN_HEIGHT, 1));
-    };
-    updateScale();
-    window.addEventListener("resize", updateScale);
-    return () => window.removeEventListener("resize", updateScale);
-  }, []);
-
-  useEffect(() => {
-    const closeMenu = (event) => {
-      if (!menuRef.current?.contains(event.target)) setMenuOpen(false);
-    };
-
-    const closeWithEscape = (event) => {
-      if (event.key === "Escape") setMenuOpen(false);
-    };
-
-    document.addEventListener("pointerdown", closeMenu);
-    document.addEventListener("keydown", closeWithEscape);
-    return () => {
-      document.removeEventListener("pointerdown", closeMenu);
-      document.removeEventListener("keydown", closeWithEscape);
-    };
-  }, []);
-
-  useEffect(() => {
-    const selectedOption = getWindowSizeOption(windowSizeId);
-
-    try {
-      localStorage.setItem("voxanova-window-size", selectedOption.id);
-    } catch {
-      // LocalStorage puede no existir en algunos hosts; el preset sigue funcionando en sesión.
-    }
-
-    const timer = window.setTimeout(() => sendNativeEditorSize(selectedOption), 80);
-    return () => window.clearTimeout(timer);
-  }, [windowSizeId]);
-
-  useEffect(
-    () => () => {
-      if (pendingEditorFrameRef.current) {
-        window.cancelAnimationFrame(pendingEditorFrameRef.current);
-      }
-    },
-    []
-  );
-
-  const scheduleEditorScale = useCallback((scale) => {
-    pendingEditorScaleRef.current = scale;
-
-    if (pendingEditorFrameRef.current) return;
-
-    pendingEditorFrameRef.current = window.requestAnimationFrame(() => {
-      pendingEditorFrameRef.current = 0;
-      const nextScale = pendingEditorScaleRef.current;
-      if (nextScale == null) return;
-      sendNativeEditorSize({ id: "custom", scale: nextScale });
-    });
-  }, []);
-
-  const getResizeLimit = useCallback(() => 1.25, []);
-
-  const applyResizeScale = useCallback(
-    (scale) => {
-      const nextScale = Number(clamp(scale, 0.38, getResizeLimit()).toFixed(3));
-      setPluginScale(nextScale);
-      scheduleEditorScale(nextScale);
-    },
-    [getResizeLimit, scheduleEditorScale]
-  );
-
-  const updateResizeFromPointer = useCallback(
-    (clientX, clientY) => {
-      const drag = resizeDragRef.current;
-      if (!drag.active) return;
-      const deltaX = clientX - drag.x;
-      const deltaY = clientY - drag.y;
-      const deltaScale = (deltaX / PLUGIN_WIDTH + deltaY / PLUGIN_HEIGHT) / 2;
-      applyResizeScale(drag.scale + deltaScale);
-    },
-    [applyResizeScale]
-  );
-
-  const moveWindowResize = (event) => {
-    const pointerId = event.pointerId ?? "mouse";
-    if (!resizeDragRef.current.active || resizeDragRef.current.id !== pointerId) return;
-    event.preventDefault();
-    updateResizeFromPointer(event.clientX, event.clientY);
+  const setParam = (id, value) => {
+    const nextValue = booleanParameterSet.has(id) ? Boolean(value) : value;
+    setValues((current) => ({ ...current, [id]: nextValue }));
+    sendNativeParameter(id, booleanParameterSet.has(id) ? (nextValue ? 1 : 0) : nextValue);
   };
 
-  const endWindowResize = (event) => {
-    const pointerId = event.pointerId ?? "mouse";
-    if (resizeDragRef.current.id !== pointerId) return;
-    updateResizeFromPointer(event.clientX, event.clientY);
-    resizeDragRef.current = { active: false, id: -1, x: 0, y: 0, scale: pluginScale };
-    document.body.classList.remove("is-window-resizing");
-    document.removeEventListener("mousemove", moveWindowResize);
-    document.removeEventListener("mouseup", endWindowResize);
-  };
-
-  const startWindowResize = (event) => {
-    if (event.type === "pointerdown" && event.pointerType === "mouse") return;
-    if (resizeDragRef.current.active) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const pointerId = event.pointerId ?? "mouse";
-    resizeDragRef.current = {
-      active: true,
-      id: pointerId,
-      x: event.clientX,
-      y: event.clientY,
-      scale: pluginScale
-    };
-    event.currentTarget.setPointerCapture?.(pointerId);
-    if (pointerId === "mouse") {
-      document.addEventListener("mousemove", moveWindowResize);
-      document.addEventListener("mouseup", endWindowResize);
-    }
-    document.body.classList.add("is-window-resizing");
-  };
-
-  const toggleModule = (title) =>
-    setToggles((current) => {
-      const enabled = !current[title];
-      const parameterId = moduleParameterIds[title];
-
-      if (parameterId) {
-        const nativeValue = enabled ? 1 : 0;
-        markPendingNativeValue(parameterId, nativeValue);
-        sendNativeParameter(parameterId, nativeValue);
-      }
-
-      return { ...current, [title]: enabled };
-    });
-
-  const toggleGlueModule = () => {
-    if (!toggles.GLUE) {
-      setNativeGlueMultiband(false);
-      setToggles((current) => ({ ...current, GLUE: true }));
-      markPendingNativeValue("glueEnabled", 1);
-      sendNativeParameter("glueEnabled", 1);
-      return;
-    }
-
-    if (!glueMultibandOn) {
-      setNativeGlueMultiband(true);
-      return;
-    }
-
-    setNativeGlueMultiband(false);
-    setToggles((current) => ({ ...current, GLUE: false }));
-    markPendingNativeValue("glueEnabled", 0);
-    sendNativeParameter("glueEnabled", 0);
-  };
-
-  const toggleEffect = (key, desiredState) =>
-    setEffectToggles((current) => {
-      const currentValue = current[key] === true ? "on" : current[key] || "off";
-      const nextValue =
-        desiredState ?? (currentValue === "on" ? "aux" : currentValue === "aux" ? "off" : "on");
-      const parameterId = effectParameterIds[key];
-
-      if (parameterId) {
-        const nativeValue = nextValue === "off" ? 0 : 1;
-        markPendingNativeValue(parameterId, nativeValue);
-        sendNativeParameter(parameterId, nativeValue);
-      }
-
-      return { ...current, [key]: nextValue };
-    });
-
-  const markPendingNativeValue = (id, value) => {
-    pendingNativeValuesRef.current[id] = { value, until: performance.now() + 1500 };
-  };
-
-  const setNativeInputGain = (value) => {
-    setInputGain(value);
-    markPendingNativeValue("inputGain", value);
-    sendNativeParameter("inputGain", value);
-  };
-
-  const setNativeOutputGain = (value) => {
-    setOutputGain(value);
-    markPendingNativeValue("outputGain", value);
-    sendNativeParameter("outputGain", value);
-  };
-
-  const setNativeGateThreshold = (value) => {
-    setGateThreshold(value);
-    const nativeValue = percentToDb(value, -80, 0);
-    markPendingNativeValue("gateThreshold", nativeValue);
-    sendNativeParameter("gateThreshold", nativeValue);
-  };
-
-  const setNativeStereoWidth = (value) => {
-    const nativeValue = clamp(value, 0, 100);
-    setStereoWidth(nativeValue);
-    markPendingNativeValue("stereoWidth", nativeValue);
-    sendNativeParameter("stereoWidth", nativeValue);
-  };
-
-  const setNativeStereoLowBypass = (value) => {
-    const nativeValue = clamp(value, 0, 500);
-    setStereoLowBypass(nativeValue);
-    markPendingNativeValue("stereoLowBypass", nativeValue);
-    sendNativeParameter("stereoLowBypass", nativeValue);
-  };
-
-  const setNativeSaturation = (stage, nextValue) => {
-    const ids = saturationParameterMap[stage];
-    if (!ids) return;
-
-    const nextMode = Math.round(clamp(nextValue.mode ?? 0, 0, 3));
-    const nextAmount = clamp(nextValue.amount ?? 0, 0, 100);
-    const nextStage = { mode: nextMode, amount: nextAmount };
-
-    setSaturation((current) => ({ ...current, [stage]: nextStage }));
-
-    if (nextMode !== saturation[stage].mode) {
-      markPendingNativeValue(ids.mode, nextMode);
-      sendNativeParameter(ids.mode, nextMode);
-    }
-
-    if (nextAmount !== saturation[stage].amount) {
-      markPendingNativeValue(ids.amount, nextAmount);
-      sendNativeParameter(ids.amount, nextAmount);
-    }
-  };
-
-  const setNativeCompressorThreshold = (parameterId, setter) => (value) => {
-    setter(value);
-    const nativeValue = percentToDb(value.thr, COMPRESSOR_MIN_DB, COMPRESSOR_MAX_DB);
-    markPendingNativeValue(parameterId, nativeValue);
-    sendNativeParameter(parameterId, nativeValue);
-  };
-
-  const setNativeGlueMultiband = (enabled) => {
-    setGlueMultibandOn(enabled);
-    const nativeValue = enabled ? 1 : 0;
-    markPendingNativeValue("glueMultiband", nativeValue);
-    sendNativeParameter("glueMultiband", nativeValue);
-  };
-
-  const setNativeGlueBandThreshold = (band, value) => {
-    const parameterByBand = {
-      low: "glueLowThreshold",
-      lowMid: "glueLowMidThreshold",
-      highMid: "glueHighMidThreshold",
-      high: "glueAirThreshold"
-    };
-    const parameterId = parameterByBand[band];
-
-    setGlueBands((current) => ({ ...current, [band]: value }));
-
-    if (!parameterId) return;
-
-    const nativeValue = percentToDb(value, GLUE_BAND_MIN_DB, COMPRESSOR_MAX_DB);
-    markPendingNativeValue(parameterId, nativeValue);
-    sendNativeParameter(parameterId, nativeValue);
-  };
-
-  const setNativeFaceMix = (value) => {
-    const nativeValue = clamp(value, 0, 100);
-    setInYourFace((current) => ({ ...current, thr: nativeValue }));
-    markPendingNativeValue("faceThreshold", nativeValue);
-    sendNativeParameter("faceThreshold", nativeValue);
-  };
-
-  const setNativeReverb = (nextReverb) => {
-    setReverb(nextReverb);
-
-    Object.entries(reverbParameterMap).forEach(([key, parameterId]) => {
-      if (nextReverb[key] === reverb[key]) return;
-
-      let nativeValue = nextReverb[key];
-
-      if (key === "bpmActive" || key === "decaySync" || key === "predelaySync") {
-        nativeValue = nativeValue ? 1 : 0;
-      } else if (key === "noteMode") {
-        nativeValue = delayNoteModeToNative[nativeValue] ?? delayNoteModeToNative.NOTE;
-      }
-
-      if (typeof nativeValue !== "number") return;
-
-      markPendingNativeValue(parameterId, nativeValue);
-      sendNativeParameter(parameterId, nativeValue);
-    });
-  };
-
-  const setNativeDelay = (nextDelay) => {
-    setDelay(nextDelay);
-
-    Object.entries(delayParameterMap).forEach(([key, parameterId]) => {
-      if (nextDelay[key] === delay[key]) return;
-
-      let nativeValue = nextDelay[key];
-
-      if (key === "bpmActive" || key === "postReverb") {
-        nativeValue = nativeValue ? 1 : 0;
-      } else if (key === "mode") {
-        nativeValue = delayModeToNative[nativeValue] ?? delayModeToNative.NORMAL;
-      } else if (key === "noteMode") {
-        nativeValue = delayNoteModeToNative[nativeValue] ?? delayNoteModeToNative.NOTE;
-      } else if (key === "style") {
-        nativeValue = delayStyleToNative[nativeValue] ?? delayStyleToNative.Clean;
-      }
-
-      if (typeof nativeValue !== "number") return;
-
-      markPendingNativeValue(parameterId, nativeValue);
-      sendNativeParameter(parameterId, nativeValue);
-    });
-  };
-
-  const setWindowSize = (option) => {
-    setWindowSizeId(option.id);
-    setMenuOpen(false);
-    sendNativeEditorSize(option);
-
-    if (window.__JUCE__?.backend) return;
-
-    const previewScale = Math.min(
-      option.scale,
-      Math.max((window.innerWidth - 24) / PLUGIN_WIDTH, 0.6),
-      Math.max((window.innerHeight - 24) / PLUGIN_HEIGHT, 0.6)
+  const setWindowScale = (nextScale) => {
+    setScale(nextScale);
+    sendNativeEditorSize(
+      nextScale,
+      Math.round(PLUGIN_WIDTH * nextScale),
+      Math.round(PLUGIN_HEIGHT * nextScale)
     );
-    setPluginScale(previewScale);
   };
 
-  // Props compartidas para los ModuleCard (gate/stereo y effects).
-  const sharedModuleProps = {
-    stereoWidth,
-    onStereoChange: setNativeStereoWidth,
-    stereoLowBypass,
-    onStereoLowBypassChange: setNativeStereoLowBypass,
-    gateThreshold,
-    onGateThresholdChange: setNativeGateThreshold,
-    gateLevel: faderLevels.gate,
-    gateReduction: reductions.gate,
-    gateReductionDb: reductionDbs.gate,
-    reverb,
-    setReverb: setNativeReverb,
-    delay,
-    setDelay: setNativeDelay,
-    hostBpm,
-    effectToggles,
-    onEffectToggle: toggleEffect,
-    eqExpanded
+  const disabled = {
+    peak: !values.peakEnabled,
+    glue: !values.glueEnabled,
+    face: !values.faceEnabled,
+    gate: !values.gateEnabled,
+    stereo: !values.stereoEnabled,
+    delay: !values.delayEnabled,
+    reverb: !values.reverbEnabled
   };
-
-  // Configuración del rack de compresores (los 3 dualFader en uno).
-  const compressorRack = [
-    {
-      title: modules[1].title,
-      color: modules[1].color,
-      active: toggles[modules[1].title],
-      value: { ...peakTamer, gr: reductions.peak, grDb: reductionDbs.peak, level: faderLevels.peak },
-      onToggle: () => toggleModule(modules[1].title),
-      onChange: setNativeCompressorThreshold("peakThreshold", setPeakTamer)
-    },
-    {
-      title: modules[2].title,
-      color: modules[2].color,
-      active: toggles[modules[2].title],
-      value: { ...glue, gr: reductions.glue, grDb: reductionDbs.glue, level: faderLevels.glue },
-      onToggle: toggleGlueModule,
-      onChange: setNativeCompressorThreshold("glueThreshold", setGlue)
-    },
-    {
-      title: modules[3].title,
-      color: modules[3].color,
-      active: toggles[modules[3].title],
-      control: "mix",
-      value: { ...inYourFace, gr: reductions.face, grDb: reductionDbs.face, level: faderLevels.face },
-      onToggle: () => toggleModule(modules[3].title),
-      onChange: (nextValue) => setNativeFaceMix(nextValue.thr)
-    }
-  ];
 
   return (
     <main className="app-shell">
       <div
         className="plugin-viewport"
         style={{
-          width: `${Math.round(PLUGIN_WIDTH * pluginScale)}px`,
-          height: `${Math.round(PLUGIN_HEIGHT * pluginScale)}px`
+          width: `${Math.round(PLUGIN_WIDTH * scale)}px`,
+          height: `${Math.round(PLUGIN_HEIGHT * scale)}px`
         }}
       >
-        <section
+        <div
           className="plugin-frame"
           style={{
             width: `${PLUGIN_WIDTH}px`,
             height: `${PLUGIN_HEIGHT}px`,
-            zoom: pluginScale
+            transform: `scale(${scale})`
           }}
         >
           <header className="topbar">
-            <div className="brand">
-              <span className="brand-main">VOXANOVA</span>
-              <span className="brand-sub">VOCAL CHAIN</span>
+            <div className="brand-lockup">
+              <span>VOXANOVA</span>
+              <strong>Vocal Chain</strong>
             </div>
-            <div className="window-menu" ref={menuRef}>
-              <button
-                className={`menu-button ${menuOpen ? "is-open" : ""}`}
-                aria-label="Menu"
-                aria-expanded={menuOpen}
-                type="button"
-                onClick={() => setMenuOpen((open) => !open)}
-              >
-                <span />
-                <span />
-                <span />
-              </button>
-
-              {menuOpen && (
-                <div className="app-menu-panel" role="menu" aria-label="Voxanova menu">
-                  <section className="app-menu-section">
-                    <span className="app-menu-title">About</span>
-                    <p className="app-menu-copy">
-                      Voxanova Vocal Chain. Clean vocal processing UI for Logic, AU, VST3 and
-                      Standalone.
-                    </p>
-                  </section>
-
-                  <section className="app-menu-section">
-                    <span className="app-menu-title">Version</span>
-                    <div className="app-menu-row">
-                      <span>App</span>
-                      <em>v{appVersion}</em>
-                    </div>
-                    <div className="app-menu-row">
-                      <span>Native</span>
-                      <em>v{nativeVersion}</em>
-                    </div>
-                    <div className="app-menu-row">
-                      <span>Base UI</span>
-                      <em>{basePageSizeLabel}</em>
-                    </div>
-                  </section>
-
-                  <section className="app-menu-section">
-                    <span className="app-menu-title">Page Size</span>
-                    {windowSizeOptions.map((option) => (
-                      <button
-                        className={`window-size-option ${option.id === windowSizeId ? "active" : ""}`}
-                        key={option.id}
-                        type="button"
-                        role="menuitemradio"
-                        aria-checked={option.id === windowSizeId}
-                        onClick={() => setWindowSize(option)}
-                      >
-                        <span>{option.label}</span>
-                        <em>{Math.round(option.scale * 100)}%</em>
-                      </button>
-                    ))}
-                  </section>
-                </div>
-              )}
+            <div className="system-status">
+              <span>{nativeOnline ? "Native linked" : "Browser preview"}</span>
+              <span>{Math.round(meters.hostBpm)} BPM</span>
+              <span>v{packageMeta.version}</span>
+            </div>
+            <div className="size-switcher" aria-label="Window size">
+              {sizeOptions.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  className={scale === option.scale ? "is-active" : ""}
+                  onClick={() => setWindowScale(option.scale)}
+                >
+                  {option.label}
+                </button>
+              ))}
             </div>
           </header>
 
-          <div className="content-grid">
-            <section className="center-stage">
-              <EqPanel
-                expanded={eqExpanded}
-                onExpand={setEqExpanded}
-                saturation={saturation}
-                onSaturationChange={setNativeSaturation}
-                inputMeter={{
-                  title: "IN",
-                  value: formatMeterDb(Math.max(...meters.input)),
-                  gain: inputGain,
-                  onGainChange: setNativeInputGain,
-                  levels: meters.input,
-                  channelCount: meters.inputChannels,
-                  color: "blue"
-                }}
-                outputMeter={{
-                  title: "OUT",
-                  value: formatMeterDb(Math.max(...meters.output)),
-                  gain: outputGain,
-                  onGainChange: setNativeOutputGain,
-                  levels: meters.output,
-                  channelCount: meters.outputChannels,
-                  color: "orange"
-                }}
+          <section className="meter-row">
+            <Meter
+              label="Input"
+              levels={meters.input}
+              channels={meters.inputChannels}
+              tone="blue"
+            />
+            <div className="gain-grid">
+              <KnobControl
+                label="Input Gain"
+                value={values.inputGain}
+                min={-24}
+                max={24}
+                step={0.1}
+                formatter={dbLabel}
+                onChange={(value) => setParam("inputGain", value)}
               />
+              <KnobControl
+                label="Output Gain"
+                value={values.outputGain}
+                min={-24}
+                max={24}
+                step={0.1}
+                formatter={dbLabel}
+                onChange={(value) => setParam("outputGain", value)}
+              />
+            </div>
+            <Meter
+              label="Output"
+              levels={meters.output}
+              channels={meters.outputChannels}
+              tone="orange"
+            />
+          </section>
 
-              <section
-                className="module-strip"
-                onMouseEnter={releaseEqExpansion}
-                onPointerEnter={releaseEqExpansion}
-                onPointerMove={releaseEqExpansion}
-                onFocusCapture={releaseEqExpansion}
-              >
-                <section className="compressor-stack">
-                  <DynamicsRack
-                    compressors={compressorRack}
-                    glueBands={glueBands}
-                    glueMultibandOn={glueMultibandOn}
-                    onGlueBandChange={setNativeGlueBandThreshold}
+          <section className="main-grid">
+            <Panel
+              title="Dynamics"
+              kicker="Control"
+              action={
+                <span className="panel-meter">
+                  {meterDbLabel(Math.max(meters.peakLevel, meters.glueLevel, meters.faceLevel))}
+                </span>
+              }
+            >
+              <div className="dynamics-grid">
+                <DynamicsStrip
+                  title="Peak Tamer"
+                  enabled={values.peakEnabled}
+                  amountLabel={shortDbLabel(values.peakThreshold)}
+                  level={meters.peakLevel}
+                  reduction={meters.peakReduction}
+                  reductionDb={meters.peakReductionDb}
+                >
+                  <Toggle
+                    label={values.peakEnabled ? "On" : "Off"}
+                    active={values.peakEnabled}
+                    onChange={(value) => setParam("peakEnabled", value)}
                   />
-                </section>
-
-                <section className="utility-stack">
-                  <ModuleCard
-                    module={modules[5]}
-                    active={toggles[modules[5].title]}
-                    onToggle={() => toggleModule(modules[5].title)}
-                    stereoActive={toggles.STEREO}
-                    onStereoToggle={() => toggleModule("STEREO")}
-                    {...sharedModuleProps}
+                  <SliderControl
+                    label="Threshold"
+                    value={values.peakThreshold}
+                    min={-60}
+                    max={0}
+                    step={0.1}
+                    formatter={dbLabel}
+                    disabled={disabled.peak}
+                    onChange={(value) => setParam("peakThreshold", value)}
                   />
-                </section>
+                </DynamicsStrip>
 
-                <ModuleCard
-                  module={modules[7]}
-                  active={toggles[modules[7].title]}
-                  onToggle={() => toggleModule(modules[7].title)}
-                  {...sharedModuleProps}
+                <DynamicsStrip
+                  title="Glue"
+                  enabled={values.glueEnabled}
+                  amountLabel={
+                    values.glueMultiband ? "Multiband" : shortDbLabel(values.glueThreshold)
+                  }
+                  level={meters.glueLevel}
+                  reduction={meters.glueReduction}
+                  reductionDb={meters.glueReductionDb}
+                >
+                  <div className="toggle-pair">
+                    <Toggle
+                      label={values.glueEnabled ? "On" : "Off"}
+                      active={values.glueEnabled}
+                      onChange={(value) => setParam("glueEnabled", value)}
+                    />
+                    <Toggle
+                      label="Bands"
+                      active={values.glueMultiband}
+                      onChange={(value) => setParam("glueMultiband", value)}
+                    />
+                  </div>
+                  {values.glueMultiband ? (
+                    <div className="mini-band-grid">
+                      {[
+                        ["Low", "glueLowThreshold"],
+                        ["Low Mid", "glueLowMidThreshold"],
+                        ["High Mid", "glueHighMidThreshold"],
+                        ["Air", "glueAirThreshold"]
+                      ].map(([label, id]) => (
+                        <SliderControl
+                          key={id}
+                          label={label}
+                          value={values[id]}
+                          min={-48}
+                          max={0}
+                          step={0.1}
+                          formatter={shortDbLabel}
+                          disabled={disabled.glue}
+                          onChange={(value) => setParam(id, value)}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <SliderControl
+                      label="Threshold"
+                      value={values.glueThreshold}
+                      min={-60}
+                      max={0}
+                      step={0.1}
+                      formatter={dbLabel}
+                      disabled={disabled.glue}
+                      onChange={(value) => setParam("glueThreshold", value)}
+                    />
+                  )}
+                </DynamicsStrip>
+
+                <DynamicsStrip
+                  title="In Your Face"
+                  enabled={values.faceEnabled}
+                  amountLabel={percentLabel(values.faceThreshold)}
+                  level={meters.faceLevel}
+                  reduction={meters.faceReduction}
+                  reductionDb={meters.faceReductionDb}
+                >
+                  <Toggle
+                    label={values.faceEnabled ? "On" : "Off"}
+                    active={values.faceEnabled}
+                    onChange={(value) => setParam("faceEnabled", value)}
+                  />
+                  <SliderControl
+                    label="Amount"
+                    value={values.faceThreshold}
+                    min={0}
+                    max={100}
+                    formatter={percentLabel}
+                    disabled={disabled.face}
+                    onChange={(value) => setParam("faceThreshold", value)}
+                  />
+                </DynamicsStrip>
+              </div>
+            </Panel>
+
+            <Panel title="Utility" kicker="Input shape">
+              <div className="utility-grid">
+                <div className={`utility-card ${disabled.gate ? "is-muted" : ""}`}>
+                  <div className="card-head">
+                    <h3>Gate</h3>
+                    <Toggle
+                      label={values.gateEnabled ? "On" : "Off"}
+                      active={values.gateEnabled}
+                      onChange={(value) => setParam("gateEnabled", value)}
+                    />
+                  </div>
+                  <SliderControl
+                    label="Threshold"
+                    value={values.gateThreshold}
+                    min={-80}
+                    max={0}
+                    step={0.1}
+                    formatter={dbLabel}
+                    disabled={disabled.gate}
+                    onChange={(value) => setParam("gateThreshold", value)}
+                  />
+                  <Reduction
+                    label="Gate action"
+                    value={meters.gateReduction}
+                    db={meters.gateReductionDb}
+                  />
+                </div>
+
+                <div className={`utility-card ${disabled.stereo ? "is-muted" : ""}`}>
+                  <div className="card-head">
+                    <h3>Stereo</h3>
+                    <Toggle
+                      label={values.stereoEnabled ? "On" : "Off"}
+                      active={values.stereoEnabled}
+                      onChange={(value) => setParam("stereoEnabled", value)}
+                    />
+                  </div>
+                  <KnobControl
+                    label="Width"
+                    value={values.stereoWidth}
+                    min={0}
+                    max={100}
+                    formatter={percentLabel}
+                    disabled={disabled.stereo}
+                    onChange={(value) => setParam("stereoWidth", value)}
+                  />
+                  <SliderControl
+                    label="Low Bypass"
+                    value={values.stereoLowBypass}
+                    min={0}
+                    max={500}
+                    formatter={hzLabel}
+                    disabled={disabled.stereo}
+                    onChange={(value) => setParam("stereoLowBypass", value)}
+                  />
+                </div>
+              </div>
+            </Panel>
+
+            <Panel title="Tone" kicker="Saturation">
+              <div className="tone-grid">
+                {[
+                  ["Pre", "preSaturationMode", "preSaturationAmount"],
+                  ["Post", "postSaturationMode", "postSaturationAmount"]
+                ].map(([label, modeId, amountId]) => (
+                  <div className="tone-card" key={label}>
+                    <h3>{label}</h3>
+                    <SelectControl
+                      label="Mode"
+                      value={values[modeId]}
+                      options={selectOptions.saturation}
+                      onChange={(value) => setParam(modeId, value)}
+                    />
+                    <KnobControl
+                      label="Drive"
+                      value={values[amountId]}
+                      min={0}
+                      max={100}
+                      formatter={percentLabel}
+                      disabled={values[modeId] === 0}
+                      onChange={(value) => setParam(amountId, value)}
+                    />
+                  </div>
+                ))}
+              </div>
+            </Panel>
+
+            <Panel
+              title="Delay"
+              kicker="Time"
+              active={values.delayEnabled}
+              action={
+                <Toggle
+                  label={values.delayEnabled ? "On" : "Off"}
+                  active={values.delayEnabled}
+                  onChange={(value) => setParam("delayEnabled", value)}
                 />
-              </section>
-            </section>
-          </div>
-          <button
-            type="button"
-            className="plugin-resize-grip"
-            aria-label="Resize plugin window"
-            title="Resize"
-            onPointerDown={startWindowResize}
-            onPointerMove={moveWindowResize}
-            onPointerUp={endWindowResize}
-            onPointerCancel={endWindowResize}
-            onMouseDown={startWindowResize}
-          >
-            <span />
-            <span />
-            <span />
-          </button>
-        </section>
+              }
+            >
+              <div className="fx-grid">
+                <KnobControl
+                  label="Mix"
+                  value={values.delayMix}
+                  min={0}
+                  max={100}
+                  formatter={percentLabel}
+                  disabled={disabled.delay}
+                  onChange={(value) => setParam("delayMix", value)}
+                />
+                <KnobControl
+                  label="Feedback"
+                  value={values.delayFeedback}
+                  min={0}
+                  max={100}
+                  formatter={percentLabel}
+                  disabled={disabled.delay}
+                  onChange={(value) => setParam("delayFeedback", value)}
+                />
+                <SelectControl
+                  label="Division"
+                  value={values.delayDivision}
+                  options={selectOptions.delayDivision}
+                  disabled={disabled.delay || !values.delaySync}
+                  onChange={(value) => setParam("delayDivision", value)}
+                />
+                <SelectControl
+                  label="Feel"
+                  value={values.delayNoteMode}
+                  options={selectOptions.note}
+                  disabled={disabled.delay || !values.delaySync}
+                  onChange={(value) => setParam("delayNoteMode", value)}
+                />
+                <SliderControl
+                  label="Manual Time"
+                  value={values.delayTimeMs}
+                  min={1}
+                  max={2000}
+                  formatter={msLabel}
+                  disabled={disabled.delay || values.delaySync}
+                  onChange={(value) => setParam("delayTimeMs", value)}
+                />
+                <SelectControl
+                  label="Mode"
+                  value={values.delayMode}
+                  options={selectOptions.delayMode}
+                  disabled={disabled.delay}
+                  onChange={(value) => setParam("delayMode", value)}
+                />
+                <SelectControl
+                  label="Style"
+                  value={values.delayStyle}
+                  options={selectOptions.delayStyle}
+                  disabled={disabled.delay}
+                  onChange={(value) => setParam("delayStyle", value)}
+                />
+                <div className="toggle-stack">
+                  <Toggle
+                    label="Sync"
+                    active={values.delaySync}
+                    onChange={(value) => setParam("delaySync", value)}
+                  />
+                  <Toggle
+                    label="Post Reverb"
+                    active={values.delayPostReverb}
+                    onChange={(value) => setParam("delayPostReverb", value)}
+                  />
+                </div>
+                <SliderControl
+                  label="Low Cut"
+                  value={values.delayLowCut}
+                  min={0}
+                  max={100}
+                  formatter={percentLabel}
+                  disabled={disabled.delay}
+                  onChange={(value) => setParam("delayLowCut", value)}
+                />
+                <SliderControl
+                  label="High Cut"
+                  value={values.delayHighCut}
+                  min={0}
+                  max={100}
+                  formatter={percentLabel}
+                  disabled={disabled.delay}
+                  onChange={(value) => setParam("delayHighCut", value)}
+                />
+              </div>
+            </Panel>
+
+            <Panel
+              title="Reverb"
+              kicker="Space"
+              active={values.reverbEnabled}
+              action={
+                <Toggle
+                  label={values.reverbEnabled ? "On" : "Off"}
+                  active={values.reverbEnabled}
+                  onChange={(value) => setParam("reverbEnabled", value)}
+                />
+              }
+            >
+              <div className="fx-grid reverb-grid">
+                <SelectControl
+                  label="Type"
+                  value={values.reverbMode}
+                  options={selectOptions.reverbMode}
+                  disabled={disabled.reverb}
+                  onChange={(value) => setParam("reverbMode", value)}
+                />
+                <KnobControl
+                  label="Mix"
+                  value={values.reverbMix}
+                  min={0}
+                  max={100}
+                  formatter={percentLabel}
+                  disabled={disabled.reverb}
+                  onChange={(value) => setParam("reverbMix", value)}
+                />
+                <KnobControl
+                  label="Size"
+                  value={values.reverbSize}
+                  min={0}
+                  max={100}
+                  formatter={percentLabel}
+                  disabled={disabled.reverb}
+                  onChange={(value) => setParam("reverbSize", value)}
+                />
+                <SliderControl
+                  label="Decay"
+                  value={values.reverbDecay}
+                  min={0}
+                  max={100}
+                  formatter={reverbDecayLabel}
+                  disabled={disabled.reverb || values.reverbDecaySync}
+                  onChange={(value) => setParam("reverbDecay", value)}
+                />
+                <SliderControl
+                  label="Predelay"
+                  value={values.reverbPredelay}
+                  min={0}
+                  max={100}
+                  formatter={msLabel}
+                  disabled={disabled.reverb || values.reverbPredelaySync}
+                  onChange={(value) => setParam("reverbPredelay", value)}
+                />
+                <SelectControl
+                  label="Decay Sync"
+                  value={values.reverbDecayDivision}
+                  options={selectOptions.delayDivision}
+                  disabled={disabled.reverb || !values.reverbDecaySync}
+                  onChange={(value) => setParam("reverbDecayDivision", value)}
+                />
+                <SelectControl
+                  label="Predelay Sync"
+                  value={values.reverbPredelayDivision}
+                  options={selectOptions.reverbPredelayDivision}
+                  disabled={disabled.reverb || !values.reverbPredelaySync}
+                  onChange={(value) => setParam("reverbPredelayDivision", value)}
+                />
+                <SelectControl
+                  label="Feel"
+                  value={values.reverbNoteMode}
+                  options={selectOptions.note}
+                  disabled={disabled.reverb}
+                  onChange={(value) => setParam("reverbNoteMode", value)}
+                />
+                <div className="toggle-stack">
+                  <Toggle
+                    label="BPM"
+                    active={values.reverbSync}
+                    onChange={(value) => setParam("reverbSync", value)}
+                  />
+                  <Toggle
+                    label="Decay Sync"
+                    active={values.reverbDecaySync}
+                    onChange={(value) => setParam("reverbDecaySync", value)}
+                  />
+                  <Toggle
+                    label="Pre Sync"
+                    active={values.reverbPredelaySync}
+                    onChange={(value) => setParam("reverbPredelaySync", value)}
+                  />
+                </div>
+                <SliderControl
+                  label="Low Cut"
+                  value={values.reverbLowCut}
+                  min={0}
+                  max={100}
+                  formatter={percentLabel}
+                  disabled={disabled.reverb}
+                  onChange={(value) => setParam("reverbLowCut", value)}
+                />
+                <SliderControl
+                  label="High Cut"
+                  value={values.reverbHighCut}
+                  min={0}
+                  max={100}
+                  formatter={percentLabel}
+                  disabled={disabled.reverb}
+                  onChange={(value) => setParam("reverbHighCut", value)}
+                />
+              </div>
+            </Panel>
+          </section>
+        </div>
       </div>
     </main>
   );
 }
-
-export default App;
