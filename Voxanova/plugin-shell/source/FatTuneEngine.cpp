@@ -140,30 +140,6 @@ void FatTuneEngine::prepare(double nextSampleRate, int samplesPerBlock)
 
   for (auto& channelBuffer : inputBuffer)
     channelBuffer.assign(static_cast<size_t>(bufferSize + 4), 0.0f);
-  for (auto& channelBuffer : residualBuffer)
-    channelBuffer.assign(static_cast<size_t>(bufferSize + 4), 0.0f);
-
-  // LPC analysis window (Hann) and lag window (Gaussian, ~30 Hz bandwidth widening).
-  lpcAnalysisLength = juce::jlimit(384, 1536, juce::roundToInt(sampleRate * 0.020));
-  lpcAnalysisCapacity = lpcAnalysisLength;
-  lpcAnalysisWindow.assign(static_cast<size_t>(lpcAnalysisLength), 0.0f);
-  for (auto i = 0; i < lpcAnalysisLength; ++i)
-    lpcAnalysisWindow[static_cast<size_t>(i)] =
-        0.5f - 0.5f * std::cos(juce::MathConstants<float>::twoPi * static_cast<float>(i) /
-                               static_cast<float>(juce::jmax(1, lpcAnalysisLength - 1)));
-  lpcLagWindow.assign(static_cast<size_t>(lpcOrder + 1), 0.0f);
-  {
-    constexpr auto bandwidthHz = 30.0f;
-    for (auto k = 0; k <= lpcOrder; ++k)
-    {
-      const auto v = juce::MathConstants<float>::twoPi * static_cast<float>(k) * bandwidthHz /
-                     static_cast<float>(sampleRate);
-      lpcLagWindow[static_cast<size_t>(k)] = std::exp(-0.5f * v * v);
-    }
-  }
-  lpcAnalysisScratch.assign(static_cast<size_t>(lpcAnalysisLength), 0.0f);
-  lpcUpdateInterval = juce::jlimit(32, 256, juce::roundToInt(sampleRate * 0.0025));
-  lpcCrossfadeLength = juce::jlimit(16, 192, juce::roundToInt(sampleRate * 0.0015));
 
   crossfade.assign(static_cast<size_t>(fragmentSize), 0.0f);
   for (auto i = 0; i < fragmentSize; ++i)
@@ -173,7 +149,6 @@ void FatTuneEngine::prepare(double nextSampleRate, int samplesPerBlock)
 
   detectorBuffer.assign(static_cast<size_t>(detectorSize), 0.0f);
   detectorScratch.assign(static_cast<size_t>(detectorSize), 0.0f);
-  pitchCmndf.assign(static_cast<size_t>(detectorSize), 1.0f);
   detectorLowpassAlpha =
       1.0f - std::exp(-2.0f * juce::MathConstants<float>::pi * 1800.0f / static_cast<float>(sampleRate));
   shiftedBlendAttackAlpha = 1.0f - std::exp(-1.0f / static_cast<float>(0.0060 * sampleRate));
@@ -188,19 +163,8 @@ void FatTuneEngine::reset()
 {
   for (auto& channelBuffer : inputBuffer)
     std::fill(channelBuffer.begin(), channelBuffer.end(), 0.0f);
-  for (auto& channelBuffer : residualBuffer)
-    std::fill(channelBuffer.begin(), channelBuffer.end(), 0.0f);
-  for (auto& history : lpcSynthHistory)
-    history.fill(0.0f);
-  lpcCoeffs.fill(0.0f);
-  lpcCoeffs[0] = 1.0f;
-  lpcCoeffsPrev = lpcCoeffs;
-  lpcCrossfadeRemaining = 0;
-  lpcSampleCounter = 0;
-  lpcReady = false;
   std::fill(detectorBuffer.begin(), detectorBuffer.end(), 0.0f);
   std::fill(detectorScratch.begin(), detectorScratch.end(), 0.0f);
-  std::fill(pitchCmndf.begin(), pitchCmndf.end(), 1.0f);
 
   writeIndex = 0;
   filledSamples = 0;
@@ -301,9 +265,6 @@ FatTuneEngine::Result FatTuneEngine::processSample(float left, float right, cons
     base[bufferSize + 2] = base[2];
     base[bufferSize + 3] = base[3];
   }
-
-  writeResidualSample();
-  maybeUpdateLpc();
 
   const auto trackingActive = correctionActive || forcePitchTracking;
   if (trackingActive)
@@ -452,109 +413,75 @@ void FatTuneEngine::analysePitch(int noteMask)
   }
 
   const auto detectorRate = static_cast<float>(sampleRate / static_cast<double>(detectorDecimation));
-  const auto minTau = juce::jlimit(2, detectorSize / 2 - 2, juce::roundToInt(detectorRate / 1200.0f));
-  const auto maxTau = juce::jlimit(minTau + 4, detectorSize / 2 - 1, juce::roundToInt(detectorRate / 60.0f));
-
-  // YIN difference function d[tau] = sum_{i=0..W-1} (x[i] - x[i+tau])^2, with W = N - maxTau.
-  // Computed in-place into pitchCmndf, then converted to the cumulative-mean-normalized
-  // difference function (CMNDF).
-  const auto windowLength = detectorSize - maxTau;
-  if (windowLength <= 8 || static_cast<int>(pitchCmndf.size()) <= maxTau)
-  {
-    detectedClarity *= 0.72f;
-    return;
-  }
-
-  pitchCmndf[0] = 1.0f;
-  auto runningSum = 0.0f;
-  for (auto tau = 1; tau <= maxTau; ++tau)
-  {
-    auto sum = 0.0f;
-    for (auto i = 0; i < windowLength; ++i)
-    {
-      const auto diff = detectorScratch[static_cast<size_t>(i)] -
-                        detectorScratch[static_cast<size_t>(i + tau)];
-      sum += diff * diff;
-    }
-    runningSum += sum;
-    pitchCmndf[static_cast<size_t>(tau)] = runningSum > 1.0e-12f
-                                                ? sum * static_cast<float>(tau) / runningSum
-                                                : 1.0f;
-  }
-
-  // YIN absolute threshold rule: pick the first tau in [minTau, maxTau-1] whose CMNDF dips
-  // below `threshold` and is a local minimum. If none qualifies, fall back to the global
-  // minimum in range.
-  constexpr auto threshold = 0.12f;
-  auto chosenTau = -1;
-  for (auto tau = minTau; tau < maxTau; ++tau)
-  {
-    if (pitchCmndf[static_cast<size_t>(tau)] < threshold)
-    {
-      while (tau + 1 < maxTau &&
-             pitchCmndf[static_cast<size_t>(tau + 1)] < pitchCmndf[static_cast<size_t>(tau)])
-        ++tau;
-      chosenTau = tau;
-      break;
-    }
-  }
-
-  if (chosenTau < 0)
-  {
-    auto fallback = minTau;
-    for (auto tau = minTau + 1; tau <= maxTau; ++tau)
-      if (pitchCmndf[static_cast<size_t>(tau)] < pitchCmndf[static_cast<size_t>(fallback)])
-        fallback = tau;
-    if (pitchCmndf[static_cast<size_t>(fallback)] < 0.30f)
-      chosenTau = fallback;
-  }
-
-  if (chosenTau > 0 && hasSmoothedMidi)
-  {
-    // Octave-up guard: if the chosen tau is roughly half of the previous period, prefer the
-    // longer period when it is similarly confident. Octave-up errors are the dominant
-    // detector failure mode on vocals with strong even harmonics.
-    const auto previousFreq = 440.0f * std::pow(2.0f, (smoothedMidi - 69.0f) / 12.0f);
-    const auto previousTau = detectorRate / juce::jmax(1.0f, previousFreq);
-    const auto doubledTau = chosenTau * 2;
-    if (doubledTau < maxTau && previousTau > chosenTau * 1.5f &&
-        pitchCmndf[static_cast<size_t>(doubledTau)] < threshold + 0.06f &&
-        pitchCmndf[static_cast<size_t>(doubledTau)] <
-            pitchCmndf[static_cast<size_t>(chosenTau)] * 1.30f)
-    {
-      auto refined = doubledTau;
-      while (refined + 1 < maxTau &&
-             pitchCmndf[static_cast<size_t>(refined + 1)] < pitchCmndf[static_cast<size_t>(refined)])
-        ++refined;
-      chosenTau = refined;
-    }
-  }
+  const auto minTau = juce::jlimit(2, detectorSize - 4, juce::roundToInt(detectorRate / 1200.0f));
+  const auto maxTau = juce::jlimit(minTau + 2, detectorSize - 3, juce::roundToInt(detectorRate / 60.0f));
 
   auto bestTau = 0;
   auto bestValue = 0.0f;
   auto bestMidi = 0.0f;
-  if (chosenTau > 0 && chosenTau < maxTau)
+  auto previousValue = 0.0f;
+  const auto continuityMidi = hasSmoothedMidi ? smoothedMidi : 0.0f;
+  auto bestScore = -std::numeric_limits<float>::max();
+
+  for (auto tau = minTau; tau <= maxTau; ++tau)
   {
-    // Parabolic interpolation around the chosen lag for sub-sample accuracy.
-    auto tauF = static_cast<float>(chosenTau);
-    if (chosenTau > 0)
+    auto acf = 0.0f;
+    auto divisor = 0.0f;
+    const auto limit = detectorSize - tau;
+
+    for (auto i = 0; i < limit; ++i)
     {
-      const auto a = pitchCmndf[static_cast<size_t>(chosenTau - 1)];
-      const auto b = pitchCmndf[static_cast<size_t>(chosenTau)];
-      const auto c = pitchCmndf[static_cast<size_t>(chosenTau + 1)];
-      const auto den = a - 2.0f * b + c;
-      if (std::abs(den) > 1.0e-12f)
-        tauF = static_cast<float>(chosenTau) + 0.5f * (a - c) / den;
+      const auto a = detectorScratch[static_cast<size_t>(i)];
+      const auto b = detectorScratch[static_cast<size_t>(i + tau)];
+      acf += a * b;
+      divisor += a * a + b * b;
     }
-    const auto frequency = detectorRate / juce::jmax(1.0e-3f, tauF);
-    bestTau = chosenTau;
-    bestValue = juce::jlimit(0.0f, 1.0f, 1.0f - pitchCmndf[static_cast<size_t>(chosenTau)]);
-    bestMidi = 69.0f + 12.0f * std::log2(frequency / 440.0f);
-    if (hasSmoothedMidi)
-      bestMidi = foldMidiToReference(bestMidi, smoothedMidi);
+
+    const auto value = divisor > 0.0000001f ? (2.0f * acf) / divisor : 0.0f;
+    const auto nextTau = juce::jmin(maxTau, tau + 1);
+    auto nextAcf = 0.0f;
+    auto nextDivisor = 0.0f;
+    if (tau < maxTau)
+    {
+      const auto nextLimit = detectorSize - nextTau;
+      for (auto i = 0; i < nextLimit; ++i)
+      {
+        const auto a = detectorScratch[static_cast<size_t>(i)];
+        const auto b = detectorScratch[static_cast<size_t>(i + nextTau)];
+        nextAcf += a * b;
+        nextDivisor += a * a + b * b;
+      }
+    }
+    const auto nextValue = nextDivisor > 0.0000001f ? (2.0f * nextAcf) / nextDivisor : -1.0f;
+
+    if (tau > minTau && value >= previousValue && value > nextValue && value > 0.56f)
+    {
+      const auto frequency = detectorRate / static_cast<float>(tau);
+      auto midi = 69.0f + 12.0f * std::log2(frequency / 440.0f);
+      if (hasSmoothedMidi)
+        midi = foldMidiToReference(midi, continuityMidi);
+
+      const auto continuityDistance = hasSmoothedMidi ? std::abs(midi - continuityMidi) : 0.0f;
+      const auto continuityPenalty =
+          hasSmoothedMidi
+              ? continuityDistance * 0.075f + juce::jmax(0.0f, continuityDistance - 1.5f) * 0.12f
+              : 0.0f;
+      const auto lowTauPreference = static_cast<float>(tau) / static_cast<float>(maxTau) * 0.020f;
+      const auto score = value + lowTauPreference - continuityPenalty;
+
+      if (score > bestScore)
+      {
+        bestScore = score;
+        bestTau = tau;
+        bestValue = value;
+        bestMidi = midi;
+      }
+    }
+
+    previousValue = value;
   }
 
-  if (bestTau <= 0 || bestValue < 0.55f)
+  if (bestTau <= 0 || bestValue < 0.60f)
   {
     detectedClarity *= 0.72f;
     if (++unvoicedCounter > 5)
@@ -953,76 +880,30 @@ FatTuneEngine::Result FatTuneEngine::readShiftedSample(bool correctionActive, in
   const auto ratioStep = correctionActive ? pitchRatio : 1.0f;
   Result result;
 
-  // Read the shifted RESIDUAL (whitened input). The synthesis filter below imposes the
-  // current spectral envelope so formants stay in place when pitch shifts.
-  const auto useFormantPreservation = lpcReady;
-  const auto readShiftedChannel = [this, useFormantPreservation](int channel, float index, int ahead)
-  {
-    return useFormantPreservation ? readCubicResidualWithAhead(channel, index, ahead)
-                                  : readCubicWithAhead(channel, index, ahead);
-  };
-
   if (crossfading)
   {
     const auto fade = crossfade[static_cast<size_t>(juce::jlimit(0, fragmentSize - 1, fragmentIndex))];
-    result.left = readShiftedChannel(0, readIndex1, previousReadAhead) * (1.0f - fade) +
-                  readShiftedChannel(0, readIndex2, readAhead) * fade;
-    result.right = readShiftedChannel(1, readIndex1, previousReadAhead) * (1.0f - fade) +
-                   readShiftedChannel(1, readIndex2, readAhead) * fade;
+    result.left = readCubicWithAhead(0, readIndex1, previousReadAhead) * (1.0f - fade) +
+                  readCubicWithAhead(0, readIndex2, readAhead) * fade;
+    result.right = readCubicWithAhead(1, readIndex1, previousReadAhead) * (1.0f - fade) +
+                   readCubicWithAhead(1, readIndex2, readAhead) * fade;
     readIndex1 = wrapIndex(readIndex1 + ratioStep, bufferSize);
     readIndex2 = wrapIndex(readIndex2 + ratioStep, bufferSize);
   }
   else if (readAhead != previousReadAhead)
   {
     const auto fade = crossfade[static_cast<size_t>(juce::jlimit(0, fragmentSize - 1, fragmentIndex))];
-    result.left = readShiftedChannel(0, readIndex1, previousReadAhead) * (1.0f - fade) +
-                  readShiftedChannel(0, readIndex1, readAhead) * fade;
-    result.right = readShiftedChannel(1, readIndex1, previousReadAhead) * (1.0f - fade) +
-                   readShiftedChannel(1, readIndex1, readAhead) * fade;
+    result.left = readCubicWithAhead(0, readIndex1, previousReadAhead) * (1.0f - fade) +
+                  readCubicWithAhead(0, readIndex1, readAhead) * fade;
+    result.right = readCubicWithAhead(1, readIndex1, previousReadAhead) * (1.0f - fade) +
+                   readCubicWithAhead(1, readIndex1, readAhead) * fade;
     readIndex1 = wrapIndex(readIndex1 + ratioStep, bufferSize);
   }
   else
   {
-    result.left = readShiftedChannel(0, readIndex1, readAhead);
-    result.right = readShiftedChannel(1, readIndex1, readAhead);
+    result.left = readCubicWithAhead(0, readIndex1, readAhead);
+    result.right = readCubicWithAhead(1, readIndex1, readAhead);
     readIndex1 = wrapIndex(readIndex1 + ratioStep, bufferSize);
-  }
-
-  if (useFormantPreservation)
-  {
-    // All-pole synthesis y[n] = e[n] - sum a_k * y[n-k], using the same crossfaded
-    // coefficients as the analysis path so the filter reduces to identity at unity ratio.
-    const auto xfade = lpcCrossfadeRemaining > 0
-                           ? 1.0f - static_cast<float>(lpcCrossfadeRemaining) /
-                                        static_cast<float>(juce::jmax(1, lpcCrossfadeLength))
-                           : 1.0f;
-    auto synthesizeChannel = [this, xfade](int channel, float residualSample)
-    {
-      auto& history = lpcSynthHistory[static_cast<size_t>(juce::jlimit(0, numChannels - 1, channel))];
-      auto y = residualSample;
-      for (auto k = 1; k <= lpcOrder; ++k)
-      {
-        const auto aCurr = lpcCoeffs[static_cast<size_t>(k)];
-        const auto aPrev = lpcCoeffsPrev[static_cast<size_t>(k)];
-        const auto aEff = aPrev + (aCurr - aPrev) * xfade;
-        y -= aEff * history[static_cast<size_t>(k - 1)];
-      }
-      if (!std::isfinite(y))
-      {
-        y = 0.0f;
-        history.fill(0.0f);
-      }
-      else
-      {
-        y = juce::jlimit(-4.0f, 4.0f, y);
-      }
-      for (auto k = lpcOrder - 1; k > 0; --k)
-        history[static_cast<size_t>(k)] = history[static_cast<size_t>(k - 1)];
-      history[0] = y;
-      return y;
-    };
-    result.left = synthesizeChannel(0, result.left);
-    result.right = synthesizeChannel(1, result.right);
   }
 
   if (++fragmentIndex >= fragmentSize)
@@ -1150,169 +1031,9 @@ float FatTuneEngine::readCubicWithAhead(int channel, float index, int ahead) con
   return readCubic(channel, index + static_cast<float>(ahead));
 }
 
-float FatTuneEngine::readCubicResidual(int channel, float index) const
-{
-  const auto channelIndex = static_cast<size_t>(juce::jlimit(0, numChannels - 1, channel));
-  const auto& buffer = residualBuffer[channelIndex];
-  if (buffer.empty())
-    return 0.0f;
-
-  index = wrapIndex(index, bufferSize);
-  const auto baseIndex = static_cast<int>(std::floor(index));
-  const auto amount = index - static_cast<float>(baseIndex);
-
-  std::array<float, 4> samples {};
-  for (auto i = 0; i < 4; ++i)
-  {
-    const auto wrapped = (baseIndex + i - 1 + bufferSize) % bufferSize;
-    samples[static_cast<size_t>(i)] = buffer[static_cast<size_t>(wrapped)];
-  }
-
-  return cubic(samples.data(), amount);
-}
-
-float FatTuneEngine::readCubicResidualWithAhead(int channel, float index, int ahead) const
-{
-  return readCubicResidual(channel, index + static_cast<float>(ahead));
-}
-
 float FatTuneEngine::readDelaySample(int channel, float delay) const
 {
   return readCubic(channel, static_cast<float>(writeIndex) - delay);
-}
-
-void FatTuneEngine::writeResidualSample()
-{
-  const auto xfade = lpcCrossfadeRemaining > 0
-                         ? 1.0f - static_cast<float>(lpcCrossfadeRemaining) /
-                                      static_cast<float>(juce::jmax(1, lpcCrossfadeLength))
-                         : 1.0f;
-
-  for (auto channel = 0; channel < numChannels; ++channel)
-  {
-    const auto& inBuf = inputBuffer[static_cast<size_t>(channel)];
-    const auto x = inBuf[static_cast<size_t>(writeIndex)];
-    auto pred = 0.0f;
-    for (auto k = 1; k <= lpcOrder; ++k)
-    {
-      const auto idx = (writeIndex - k + bufferSize) % bufferSize;
-      const auto aCurr = lpcCoeffs[static_cast<size_t>(k)];
-      const auto aPrev = lpcCoeffsPrev[static_cast<size_t>(k)];
-      const auto aEff = aPrev + (aCurr - aPrev) * xfade;
-      pred += aEff * inBuf[static_cast<size_t>(idx)];
-    }
-    auto residual = x + pred;
-    if (!std::isfinite(residual))
-      residual = 0.0f;
-    residualBuffer[static_cast<size_t>(channel)][static_cast<size_t>(writeIndex)] = residual;
-  }
-
-  for (auto channel = 0; channel < numChannels; ++channel)
-  {
-    const auto base = residualBuffer[static_cast<size_t>(channel)].data();
-    base[bufferSize] = base[0];
-    base[bufferSize + 1] = base[1];
-    base[bufferSize + 2] = base[2];
-    base[bufferSize + 3] = base[3];
-  }
-
-  if (lpcCrossfadeRemaining > 0)
-    --lpcCrossfadeRemaining;
-}
-
-void FatTuneEngine::maybeUpdateLpc()
-{
-  if (++lpcSampleCounter < lpcUpdateInterval)
-    return;
-  lpcSampleCounter = 0;
-  updateLpcCoefficients();
-}
-
-void FatTuneEngine::updateLpcCoefficients()
-{
-  if (filledSamples < lpcAnalysisLength + lpcOrder)
-    return;
-  if (static_cast<int>(lpcAnalysisScratch.size()) < lpcAnalysisLength)
-    return;
-  if (static_cast<int>(lpcAnalysisWindow.size()) < lpcAnalysisLength)
-    return;
-
-  // Pull the last lpcAnalysisLength samples (mono mix), apply Hann window.
-  for (auto i = 0; i < lpcAnalysisLength; ++i)
-  {
-    const auto idx = (writeIndex - lpcAnalysisLength + 1 + i + bufferSize) % bufferSize;
-    const auto mono = 0.5f * (inputBuffer[0][static_cast<size_t>(idx)] +
-                              inputBuffer[1][static_cast<size_t>(idx)]);
-    lpcAnalysisScratch[static_cast<size_t>(i)] = mono * lpcAnalysisWindow[static_cast<size_t>(i)];
-  }
-
-  // Autocorrelation r[0..order] with Gaussian lag window for bandwidth widening.
-  std::array<float, lpcOrder + 1> r {};
-  for (auto k = 0; k <= lpcOrder; ++k)
-  {
-    auto sum = 0.0f;
-    const auto limit = lpcAnalysisLength - k;
-    for (auto i = 0; i < limit; ++i)
-      sum += lpcAnalysisScratch[static_cast<size_t>(i)] *
-             lpcAnalysisScratch[static_cast<size_t>(i + k)];
-    r[static_cast<size_t>(k)] = sum * lpcLagWindow[static_cast<size_t>(k)];
-  }
-
-  if (r[0] < 1.0e-9f)
-    return;
-
-  std::array<float, lpcOrder + 1> a {};
-  auto gain = 0.0f;
-  if (!levinsonDurbin(r.data(), lpcOrder, a.data(), gain))
-    return;
-
-  for (auto k = 1; k <= lpcOrder; ++k)
-    if (!std::isfinite(a[static_cast<size_t>(k)]) ||
-        std::abs(a[static_cast<size_t>(k)]) > 4.0f)
-      return;
-
-  if (lpcReady)
-    lpcCoeffsPrev = lpcCoeffs;
-  else
-    lpcCoeffsPrev = a;
-  lpcCoeffs = a;
-  lpcCoeffs[0] = 1.0f;
-  lpcCrossfadeRemaining = lpcCrossfadeLength;
-  lpcReady = true;
-}
-
-bool FatTuneEngine::levinsonDurbin(const float* r, int order, float* a, float& gain)
-{
-  for (auto k = 0; k <= order; ++k)
-    a[k] = 0.0f;
-  a[0] = 1.0f;
-
-  auto E = r[0];
-  if (E <= 1.0e-12f)
-    return false;
-
-  std::array<float, lpcOrder + 1> aPrevious {};
-  for (auto i = 1; i <= order; ++i)
-  {
-    auto acc = r[i];
-    for (auto j = 1; j < i; ++j)
-      acc += a[j] * r[i - j];
-    auto k_i = -acc / E;
-    if (!std::isfinite(k_i) || std::abs(k_i) >= 0.999f)
-      return false;
-
-    for (auto j = 0; j <= order; ++j)
-      aPrevious[static_cast<size_t>(j)] = a[j];
-    for (auto j = 1; j < i; ++j)
-      a[j] = aPrevious[static_cast<size_t>(j)] + k_i * aPrevious[static_cast<size_t>(i - j)];
-    a[i] = k_i;
-
-    E *= (1.0f - k_i * k_i);
-    if (E <= 1.0e-20f)
-      return false;
-  }
-  gain = E;
-  return true;
 }
 
 float FatTuneEngine::processOnePoleLowpass(float input, float cutoffHz, float& state) const

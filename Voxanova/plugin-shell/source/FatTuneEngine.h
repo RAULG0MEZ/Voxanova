@@ -56,13 +56,7 @@ private:
   float findBestSpliceIndex(float referenceIndex, float targetIndex, float searchRadius) const;
   float readCubic(int channel, float index) const;
   float readCubicWithAhead(int channel, float index, int ahead) const;
-  float readCubicResidual(int channel, float index) const;
-  float readCubicResidualWithAhead(int channel, float index, int ahead) const;
   float readDelaySample(int channel, float delay) const;
-  void writeResidualSample();
-  void maybeUpdateLpc();
-  void updateLpcCoefficients();
-  static bool levinsonDurbin(const float* r, int order, float* a, float& gain);
   float processOnePoleLowpass(float input, float cutoffHz, float& state) const;
   int makeScaleMask(int key, int scale, int customMask) const;
   float findNearestScaleMidi(float midi, int key, int scale, int customMask) const;
@@ -76,27 +70,8 @@ private:
   int latencySamples = 1024;
 
   std::array<std::vector<float>, numChannels> inputBuffer;
-  std::array<std::vector<float>, numChannels> residualBuffer;
   int writeIndex = 0;
   int filledSamples = 0;
-
-  // LPC source-filter formant preservation. The shifter resamples the residual
-  // (whitened input) and then re-imposes the current spectral envelope via the
-  // synthesis filter, so formants do not move when pitch shifts.
-  static constexpr int lpcOrder = 14;
-  std::array<float, lpcOrder + 1> lpcCoeffs {};
-  std::array<float, lpcOrder + 1> lpcCoeffsPrev {};
-  int lpcCrossfadeRemaining = 0;
-  int lpcCrossfadeLength = 64;
-  int lpcUpdateInterval = 96;
-  int lpcSampleCounter = 0;
-  int lpcAnalysisLength = 768;
-  int lpcAnalysisCapacity = 0;
-  std::array<std::array<float, lpcOrder>, numChannels> lpcSynthHistory {};
-  std::vector<float> lpcAnalysisWindow;
-  std::vector<float> lpcLagWindow;
-  std::vector<float> lpcAnalysisScratch;
-  bool lpcReady = false;
 
   float readIndex1 = 0.0f;
   float readIndex2 = 0.0f;
@@ -175,7 +150,6 @@ private:
   int detectorSize = 2048;
   std::vector<float> detectorBuffer;
   std::vector<float> detectorScratch;
-  std::vector<float> pitchCmndf;
   int detectorWriteIndex = 0;
   int detectorDecimationCounter = 0;
   int analysisSampleCounter = 0;
