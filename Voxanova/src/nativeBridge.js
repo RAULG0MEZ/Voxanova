@@ -32,6 +32,25 @@ export function sendNativeParameter(id, value) {
   return requestNativeResource("/api/setParameter", { id, value: String(value) });
 }
 
+export function sendNativeEqBands(eqBands) {
+  const payload = {
+    pre: Array.isArray(eqBands?.pre) ? eqBands.pre : [],
+    post: Array.isArray(eqBands?.post) ? eqBands.post : []
+  };
+
+  try {
+    const backend = window.__JUCE__?.backend;
+    if (backend?.emitEvent) {
+      backend.emitEvent("voxanovaSetEqBands", payload);
+      return true;
+    }
+  } catch {
+    // Fall through to the resource-provider path below.
+  }
+
+  return requestNativeResource("/api/setEqBands", { json: JSON.stringify(payload) });
+}
+
 export function sendNativeEditorSize(scale, width, height) {
   try {
     const backend = window.__JUCE__?.backend;

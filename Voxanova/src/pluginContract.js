@@ -1,12 +1,25 @@
 export const PLUGIN_WIDTH = 1360;
 export const PLUGIN_HEIGHT = 820;
 
+export const EQ_FILTER_TYPES = [
+  "Bell",
+  "Surfer Bell",
+  "Low Cut",
+  "High Cut",
+  "Low Shelf",
+  "High Shelf",
+  "Notch",
+  "Band Pass"
+];
+
 export const booleanParameters = [
+  "tuneEnabled",
   "peakEnabled",
   "glueEnabled",
   "glueMultiband",
   "faceEnabled",
   "gateEnabled",
+  "deEsserEnabled",
   "stereoEnabled",
   "reverbEnabled",
   "reverbSync",
@@ -27,6 +40,12 @@ export const defaultValues = {
   preSaturationAmount: 0,
   postSaturationMode: 0,
   postSaturationAmount: 0,
+  tuneEnabled: true,
+  tuneAmount: 82,
+  tuneKey: 0,
+  tuneScale: 1,
+  tuneCustomNotes: 4095,
+  tunePitchShift: 0,
   peakEnabled: true,
   peakThreshold: 0,
   glueEnabled: true,
@@ -39,11 +58,15 @@ export const defaultValues = {
   faceEnabled: true,
   faceThreshold: 0,
   gateEnabled: true,
+  deEsserEnabled: false,
+  deEsserAmount: 35,
+  deEsserLow: 5500,
+  deEsserHigh: 8500,
   stereoEnabled: false,
   reverbEnabled: false,
   reverbMix: 0,
   reverbDecay: 72,
-  reverbSize: 68,
+  reverbSize: 100,
   reverbPredelay: 40,
   reverbLowCut: 0,
   reverbHighCut: 100,
@@ -54,6 +77,7 @@ export const defaultValues = {
   reverbPredelaySync: true,
   reverbDecayDivision: 2,
   reverbPredelayDivision: 3,
+  reverbAuxBus: 0,
   delayEnabled: false,
   delayMix: 0,
   delayFeedback: 35,
@@ -65,14 +89,68 @@ export const defaultValues = {
   delayTimeMs: 500,
   delayMode: 0,
   delayPostReverb: false,
-  delayStyle: 0
+  delayStyle: 0,
+  delayAuxBus: 0
 };
 
 export const saturationModes = ["Off", "1073", "Tape", "Tube"];
+export const autoTuneNotes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+export const autoTuneScales = [
+  'CUSTOM',
+  'MAJ',
+  'MIN',
+  'CHR',
+  'NAT MIN',
+  'HARM MIN',
+  'MEL MIN',
+  'DORIAN',
+  'PHRYGIAN',
+  'LYDIAN',
+  'MIXOLYDIAN',
+  'LOCRIAN',
+  'MAJ PENT',
+  'MIN PENT',
+  'BLUES',
+  'MAJ BLUES',
+  'MIN BLUES',
+  'BEBOP MAJ',
+  'BEBOP DOM',
+  'BEBOP MIN',
+  'ALTERED',
+  'WHOLE TONE',
+  'DIM WH',
+  'DIM HW',
+  'AUG',
+  'DOUBLE HARM',
+  'PHRYG DOM',
+  'HUNG MIN',
+  'NEAP MIN',
+  'NEAP MAJ',
+  'SPANISH 8',
+  'ARABIC',
+  'PERSIAN',
+  'EGYPTIAN',
+  'HIRAJOSHI',
+  'IN SEN',
+  'IWATO',
+  'KUMOI',
+  'PELOG'
+];
 export const noteModes = ["Note", "Dot", "Triplet"];
 export const delayDivisions = ["1/1", "1/2", "1/4", "1/8", "1/16", "1/32", "1/64"];
 export const reverbPredelayDivisions = ["None", "1/64", "1/32", "1/16", "1/8", "1/4", "1/2", "1/1"];
 export const delayModes = ["Normal", "Wide", "Ping-Pong"];
+export const auxOutputOptions = [
+  "TRACK",
+  "BUS 1",
+  "BUS 2",
+  "BUS 3",
+  "BUS 4",
+  "BUS 5",
+  "BUS 6",
+  "BUS 7",
+  "BUS 8"
+];
 export const delayStyles = [
   "Clean",
   "Digital",

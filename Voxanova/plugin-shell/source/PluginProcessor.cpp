@@ -1,7 +1,9 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
+#include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace
 {
@@ -14,6 +16,12 @@ constexpr auto preSaturationModeId = "preSaturationMode";
 constexpr auto preSaturationAmountId = "preSaturationAmount";
 constexpr auto postSaturationModeId = "postSaturationMode";
 constexpr auto postSaturationAmountId = "postSaturationAmount";
+constexpr auto tuneEnabledId = "tuneEnabled";
+constexpr auto tuneAmountId = "tuneAmount";
+constexpr auto tuneKeyId = "tuneKey";
+constexpr auto tuneScaleId = "tuneScale";
+constexpr auto tuneCustomNotesId = "tuneCustomNotes";
+constexpr auto tunePitchShiftId = "tunePitchShift";
 constexpr auto peakEnabledId = "peakEnabled";
 constexpr auto peakThresholdId = "peakThreshold";
 constexpr auto glueEnabledId = "glueEnabled";
@@ -26,6 +34,10 @@ constexpr auto glueAirThresholdId = "glueAirThreshold";
 constexpr auto faceEnabledId = "faceEnabled";
 constexpr auto faceThresholdId = "faceThreshold";
 constexpr auto gateEnabledId = "gateEnabled";
+constexpr auto deEsserEnabledId = "deEsserEnabled";
+constexpr auto deEsserAmountId = "deEsserAmount";
+constexpr auto deEsserLowId = "deEsserLow";
+constexpr auto deEsserHighId = "deEsserHigh";
 constexpr auto stereoEnabledId = "stereoEnabled";
 constexpr auto reverbEnabledId = "reverbEnabled";
 constexpr auto reverbMixId = "reverbMix";
@@ -53,9 +65,11 @@ constexpr auto delayTimeMsId = "delayTimeMs";
 constexpr auto delayModeId = "delayMode";
 constexpr auto delayPostReverbId = "delayPostReverb";
 constexpr auto delayStyleId = "delayStyle";
+constexpr auto delayAuxBusId = "delayAuxBus";
+constexpr auto reverbAuxBusId = "reverbAuxBus";
 constexpr auto compressorMinDb = -60.0f;
 constexpr auto compressorMaxDb = 0.0f;
-constexpr auto glueBandMinDb = -48.0f;
+constexpr auto glueBandMinDb = compressorMinDb;
 constexpr auto fullAmount = 100.0f;
 constexpr std::array<float, 7> delayDivisionBeats { 4.0f, 2.0f, 1.0f, 0.5f, 0.25f, 0.125f, 0.0625f };
 constexpr std::array<float, 8> reverbPredelayDivisionBeats { 0.0f, 0.0625f, 0.125f, 0.25f,
@@ -64,11 +78,25 @@ constexpr std::array<const char*, 11> delayStyleLabels {
   "Clean", "Digital", "Tape", "Studio Tape", "Old Tape", "Cheap Tape",
   "Analog", "Radio", "Telephone", "Dirty", "Ambient"
 };
+[[maybe_unused]] constexpr std::array<const char*, 9> eqFilterTypeLabels {
+  "Bell", "Surfer Bell", "Desser", "Low Cut", "High Cut", "Low Shelf", "High Shelf", "Notch", "Band Pass"
+};
 constexpr std::array<const char*, 22> reverbModeLabels {
   "Concert Hall", "Bright Hall", "Plate", "Room", "Chamber", "Random Space", "Chorus Space",
   "Ambience", "Sanctuary", "Dirty Hall", "Dirty Plate", "Smooth Plate", "Smooth Room",
   "Smooth Random", "Nonlin", "Chaotic Chamber", "Chaotic Hall", "Chaotic Neutral",
   "Cathedral", "Palace", "Chamber1979", "Hall1984"
+};
+constexpr std::array<const char*, 12> tuneKeyLabels {
+  "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
+};
+constexpr std::array<const char*, 39> tuneScaleLabels {
+  "Custom", "Major", "Minor", "Chromatic", "Natural Minor", "Harmonic Minor", "Melodic Minor",
+  "Dorian", "Phrygian", "Lydian", "Mixolydian", "Locrian", "Major Pentatonic", "Minor Pentatonic",
+  "Blues", "Major Blues", "Minor Blues", "Bebop Major", "Bebop Dominant", "Bebop Minor",
+  "Altered", "Whole Tone", "Diminished W-H", "Diminished H-W", "Augmented", "Double Harmonic",
+  "Phrygian Dominant", "Hungarian Minor", "Neapolitan Minor", "Neapolitan Major", "Spanish 8",
+  "Arabic", "Persian", "Egyptian", "Hirajoshi", "In Sen", "Iwato", "Kumoi", "Pelog"
 };
 
 juce::String dbLabel(float value, int)
@@ -83,7 +111,7 @@ juce::String percentLabel(float value, int)
 
 juce::String hzLabel(float value, int)
 {
-  return juce::String(value, 0) + " Hz";
+  return value >= 1000.0f ? juce::String(value / 1000.0f, 1) + " kHz" : juce::String(value, 0) + " Hz";
 }
 
 juce::String msLabel(float value, int)
@@ -146,6 +174,45 @@ juce::String saturationModeLabel(float value, int)
   return labels[static_cast<size_t>(juce::jlimit(0, 3, juce::roundToInt(value)))];
 }
 
+juce::String tuneKeyLabel(float value, int)
+{
+  return tuneKeyLabels[static_cast<size_t>(juce::jlimit(0, static_cast<int>(tuneKeyLabels.size()) - 1,
+                                                        juce::roundToInt(value)))];
+}
+
+juce::String retunePitchLabel(float value, int)
+{
+  const auto amount = juce::jlimit(0.0f, 1.0f, value / 100.0f);
+  if (amount >= 0.985f)
+    return "Hard";
+
+  const auto retuneMs = FatTuneEngine::retuneMillisecondsForAmount(amount);
+  return juce::String(retuneMs, retuneMs < 10.0f ? 1 : 0) + " ms";
+}
+
+juce::String tuneScaleLabel(float value, int)
+{
+  return tuneScaleLabels[static_cast<size_t>(juce::jlimit(0, static_cast<int>(tuneScaleLabels.size()) - 1,
+                                                          juce::roundToInt(value)))];
+}
+
+juce::String tuneShiftLabel(float value, int)
+{
+  const auto rounded = juce::roundToInt(value);
+  return juce::String(rounded >= 0 ? "+" : "") + juce::String(rounded) + " st";
+}
+
+juce::String tuneCustomMaskLabel(float value, int)
+{
+  return juce::String(juce::jlimit(0, 4095, juce::roundToInt(value)));
+}
+
+juce::String auxBusLabel(float value, int)
+{
+  const auto busIndex = juce::jlimit(0, 8, juce::roundToInt(value));
+  return busIndex == 0 ? "Track" : "Bus " + juce::String(busIndex);
+}
+
 juce::String delayNoteModeLabel(float value, int)
 {
   constexpr std::array<const char*, 3> labels { "Note", "Dot", "Triplet" };
@@ -183,6 +250,7 @@ float thresholdEngagement(float levelDb, float thresholdDb, float kneeDb)
   const auto transition = juce::jlimit(0.0f, 1.0f, (levelDb - thresholdDb + kneeDb * 0.5f) / kneeDb);
   return transition * transition * (3.0f - 2.0f * transition);
 }
+
 } // namespace
 
 VoxanovaAudioProcessor::VoxanovaAudioProcessor()
@@ -200,6 +268,12 @@ VoxanovaAudioProcessor::VoxanovaAudioProcessor()
   preSaturationAmountParam = parameters.getRawParameterValue(preSaturationAmountId);
   postSaturationModeParam = parameters.getRawParameterValue(postSaturationModeId);
   postSaturationAmountParam = parameters.getRawParameterValue(postSaturationAmountId);
+  tuneEnabledParam = parameters.getRawParameterValue(tuneEnabledId);
+  tuneAmountParam = parameters.getRawParameterValue(tuneAmountId);
+  tuneKeyParam = parameters.getRawParameterValue(tuneKeyId);
+  tuneScaleParam = parameters.getRawParameterValue(tuneScaleId);
+  tuneCustomNotesParam = parameters.getRawParameterValue(tuneCustomNotesId);
+  tunePitchShiftParam = parameters.getRawParameterValue(tunePitchShiftId);
   peakEnabledParam = parameters.getRawParameterValue(peakEnabledId);
   peakThresholdParam = parameters.getRawParameterValue(peakThresholdId);
   glueEnabledParam = parameters.getRawParameterValue(glueEnabledId);
@@ -212,6 +286,10 @@ VoxanovaAudioProcessor::VoxanovaAudioProcessor()
   faceEnabledParam = parameters.getRawParameterValue(faceEnabledId);
   faceThresholdParam = parameters.getRawParameterValue(faceThresholdId);
   gateEnabledParam = parameters.getRawParameterValue(gateEnabledId);
+  deEsserEnabledParam = parameters.getRawParameterValue(deEsserEnabledId);
+  deEsserAmountParam = parameters.getRawParameterValue(deEsserAmountId);
+  deEsserLowParam = parameters.getRawParameterValue(deEsserLowId);
+  deEsserHighParam = parameters.getRawParameterValue(deEsserHighId);
   stereoEnabledParam = parameters.getRawParameterValue(stereoEnabledId);
   reverbEnabledParam = parameters.getRawParameterValue(reverbEnabledId);
   reverbMixParam = parameters.getRawParameterValue(reverbMixId);
@@ -239,6 +317,9 @@ VoxanovaAudioProcessor::VoxanovaAudioProcessor()
   delayModeParam = parameters.getRawParameterValue(delayModeId);
   delayPostReverbParam = parameters.getRawParameterValue(delayPostReverbId);
   delayStyleParam = parameters.getRawParameterValue(delayStyleId);
+  delayAuxBusParam = parameters.getRawParameterValue(delayAuxBusId);
+  reverbAuxBusParam = parameters.getRawParameterValue(reverbAuxBusId);
+  eqSettings = std::make_shared<const EqSettings>();
 }
 
 VoxanovaAudioProcessor::APVTS::ParameterLayout VoxanovaAudioProcessor::createParameterLayout()
@@ -267,6 +348,14 @@ VoxanovaAudioProcessor::APVTS::ParameterLayout VoxanovaAudioProcessor::createPar
   addFloat(preSaturationAmountId, "Pre Saturation Amount", 0.0f, 100.0f, 1.0f, 0.0f, percentLabel);
   addFloat(postSaturationModeId, "Post Saturation Type", 0.0f, 3.0f, 1.0f, 0.0f, saturationModeLabel);
   addFloat(postSaturationAmountId, "Post Saturation Amount", 0.0f, 100.0f, 1.0f, 0.0f, percentLabel);
+  addBool(tuneEnabledId, "Fairy Dust Tune", true);
+  addFloat(tuneAmountId, "Retune Pitch", 0.0f, 100.0f, 1.0f, 82.0f, retunePitchLabel);
+  addFloat(tuneKeyId, "Tune Key", 0.0f, static_cast<float>(tuneKeyLabels.size() - 1), 1.0f, 0.0f,
+           tuneKeyLabel);
+  addFloat(tuneScaleId, "Tune Scale", 0.0f, static_cast<float>(tuneScaleLabels.size() - 1), 1.0f, 1.0f,
+           tuneScaleLabel);
+  addFloat(tuneCustomNotesId, "Tune Custom Notes", 0.0f, 4095.0f, 1.0f, 4095.0f, tuneCustomMaskLabel);
+  addFloat(tunePitchShiftId, "Tune Pitch Shift", -24.0f, 24.0f, 1.0f, 0.0f, tuneShiftLabel);
   addBool(peakEnabledId, "Peak Tamer", true);
   addFloat(peakThresholdId, "Peak Tamer Threshold", compressorMinDb, compressorMaxDb, 0.1f, 0.0f, dbLabel);
   addBool(glueEnabledId, "Glue", true);
@@ -281,11 +370,15 @@ VoxanovaAudioProcessor::APVTS::ParameterLayout VoxanovaAudioProcessor::createPar
   addBool(faceEnabledId, "In Your Face", true);
   addFloat(faceThresholdId, "In Your Face Amount", 0.0f, 100.0f, 1.0f, 0.0f, percentLabel);
   addBool(gateEnabledId, "Gate", true);
+  addBool(deEsserEnabledId, "De-Esser", false);
+  addFloat(deEsserAmountId, "De-Esser Amount", 0.0f, 100.0f, 1.0f, 35.0f, percentLabel);
+  addFloat(deEsserLowId, "De-Esser Low", 2500.0f, 11600.0f, 10.0f, 5500.0f, hzLabel);
+  addFloat(deEsserHighId, "De-Esser High", 2900.0f, 12000.0f, 10.0f, 8500.0f, hzLabel);
   addBool(stereoEnabledId, "Stereo", false);
   addBool(reverbEnabledId, "Reverb", false);
   addFloat(reverbMixId, "Reverb Mix", 0.0f, 100.0f, 1.0f, 0.0f, percentLabel);
   addFloat(reverbDecayId, "Reverb Decay", 0.0f, 100.0f, 1.0f, 72.0f, reverbDecayLabel);
-  addFloat(reverbSizeId, "Reverb Size", 0.0f, 100.0f, 1.0f, 68.0f, percentLabel);
+  addFloat(reverbSizeId, "Reverb Size", 0.0f, 100.0f, 1.0f, 100.0f, percentLabel);
   addFloat(reverbPredelayId, "Reverb Predelay", 0.0f, 100.0f, 1.0f, 40.0f, reverbPredelayLabel);
   addFloat(reverbLowCutId, "Reverb Low Cut", 0.0f, 100.0f, 1.0f, 0.0f, reverbLowCutLabel);
   addFloat(reverbHighCutId, "Reverb High Cut", 0.0f, 100.0f, 1.0f, 100.0f, reverbHighCutLabel);
@@ -311,20 +404,21 @@ VoxanovaAudioProcessor::APVTS::ParameterLayout VoxanovaAudioProcessor::createPar
   addBool(delayPostReverbId, "Delay Post Reverb", false);
   addFloat(delayStyleId, "Delay Type", 0.0f, static_cast<float>(delayStyleLabels.size() - 1), 1.0f, 0.0f,
            delayStyleLabel);
+  addFloat(delayAuxBusId, "Delay Output", 0.0f, 8.0f, 1.0f, 0.0f, auxBusLabel);
+  addFloat(reverbAuxBusId, "Reverb Output", 0.0f, 8.0f, 1.0f, 0.0f, auxBusLabel);
 
   return { params.begin(), params.end() };
 }
 
 void VoxanovaAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
-  juce::ignoreUnused(samplesPerBlock);
-
   currentSampleRate = sampleRate;
   const auto delaySamples = static_cast<int>(sampleRate * 8.0);
   const auto reverbPredelaySamples = static_cast<int>(sampleRate * 2.0);
   const auto reverbEarlySamples = static_cast<int>(sampleRate * 1.5);
   const auto reverbTankSamples = static_cast<int>(sampleRate * 3.0);
   const auto reverbDiffuserSamples = static_cast<int>(sampleRate * 0.6);
+  const auto reverbWidthSamples = static_cast<int>(sampleRate * 0.18);
   const auto widenSamples = static_cast<int>(sampleRate * 0.04);
 
   for (auto& delayBuffer : delayBuffers)
@@ -367,11 +461,21 @@ void VoxanovaAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBloc
   reverbWarmLowStates = {};
   reverbWarmHighStates = {};
   reverbSilkStates = {};
-  reverbSizeSmoothed = 0.68f;
+  reverbWidthBuffer.setSize(1, reverbWidthSamples);
+  reverbWidthBuffer.clear();
+  reverbWidthWritePosition = 0;
+  reverbWidthAllpassLeft = {};
+  reverbWidthAllpassRight = {};
+  reverbWidthModPhases = {};
+  reverbWidthSideLowpass = 0.0f;
+  reverbSizeSmoothed = 1.0f;
   reverbDecaySmoothed = 4.0f;
   lastReverbMode = -1;
   monoWidenBuffer.setSize(1, widenSamples);
   monoWidenBuffer.clear();
+  prepareSpectra();
+  tuneEngine.prepare(sampleRate, samplesPerBlock);
+  setLatencySamples(tuneEngine.getLatencySamples());
   monoWidenWritePosition = 0;
   monoWidenAllpassLeft = {};
   monoWidenAllpassRight = {};
@@ -379,21 +483,23 @@ void VoxanovaAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBloc
   gateEnvelope = 0.0f;
   gateSmoothedGain = 1.0f;
   gateHoldSamples = 0;
+  deEsserLowStates = {};
+  deEsserHighStates = {};
+  deEsserEnvelope = 0.0f;
+  deEsserGain = 1.0f;
   preCompressorState = {};
+  preEqStates.clear();
+  postEqStates.clear();
+  preEqStates.reserve(64);
+  postEqStates.reserve(64);
   peakCompressorState = {};
   glueCompressorState = {};
   glueBandCompressorStates = {};
-  glueBandSplitStates = {};
+  for (auto& splitState : glueBandSplitStates)
+    splitState.prepare(sampleRate, samplesPerBlock);
   faceCompressorState = {};
   postCompressorState = {};
-  gateReductionMeter.store(0.0f);
-  peakReductionMeter.store(0.0f);
-  glueReductionMeter.store(0.0f);
-  faceReductionMeter.store(0.0f);
-  gateReductionDbMeter.store(0.0f);
-  peakReductionDbMeter.store(0.0f);
-  glueReductionDbMeter.store(0.0f);
-  faceReductionDbMeter.store(0.0f);
+  clearVisualState();
 }
 
 void VoxanovaAudioProcessor::releaseResources()
@@ -420,11 +526,34 @@ VoxanovaAudioProcessor::MeterSnapshot VoxanovaAudioProcessor::getMeterSnapshot()
   snapshot.peakReductionDb = peakReductionDbMeter.load();
   snapshot.glueReductionDb = glueReductionDbMeter.load();
   snapshot.faceReductionDb = faceReductionDbMeter.load();
+  for (auto band = 0u; band < snapshot.glueBandReductions.size(); ++band)
+  {
+    snapshot.glueBandReductions[band] = glueBandReductionMeters[band].load();
+    snapshot.glueBandReductionDbs[band] = glueBandReductionDbMeters[band].load();
+  }
   snapshot.peakLevel = peakLevelMeter.load();
   snapshot.glueLevel = glueLevelMeter.load();
   snapshot.faceLevel = faceLevelMeter.load();
   snapshot.gateLevel = gateLevelMeter.load();
   snapshot.hostBpm = hostBpm.load();
+  snapshot.tuneFrequency = tuneFrequencyMeter.load();
+  snapshot.tuneCents = tuneCentsMeter.load();
+  snapshot.tuneConfidence = tuneConfidenceMeter.load();
+  snapshot.tuneTargetMidi = tuneTargetMidiMeter.load();
+  snapshot.visualSilence = visualSilenceActive.load();
+  snapshot.processCounter = meterProcessCounter.load(std::memory_order_relaxed);
+  const auto writeIndex = juce::jlimit(0, waveformSampleCount - 1, waveformWriteIndex.load());
+  copyWaveform(inputWaveform, snapshot.inputWaveform, writeIndex);
+  copyWaveform(peakWaveform, snapshot.peakWaveform, writeIndex);
+  copyWaveform(peakOutputWaveform, snapshot.peakOutputWaveform, writeIndex);
+  copyWaveform(glueWaveform, snapshot.glueWaveform, writeIndex);
+  copyWaveform(glueOutputWaveform, snapshot.glueOutputWaveform, writeIndex);
+  copyWaveform(faceWaveform, snapshot.faceWaveform, writeIndex);
+  copyWaveform(faceOutputWaveform, snapshot.faceOutputWaveform, writeIndex);
+  copyWaveform(gateWaveform, snapshot.gateWaveform, writeIndex);
+  copyWaveform(gateOutputWaveform, snapshot.gateOutputWaveform, writeIndex);
+  copySpectrum(preCompSpectrumAnalyzer.bins, snapshot.preCompSpectrum);
+  copySpectrum(postCompSpectrumAnalyzer.bins, snapshot.postCompSpectrum);
 
   return snapshot;
 }
@@ -434,13 +563,24 @@ bool VoxanovaAudioProcessor::isBusesLayoutSupported(const BusesLayout& layouts) 
   const auto input = layouts.getMainInputChannelSet();
   const auto output = layouts.getMainOutputChannelSet();
 
-  return output == juce::AudioChannelSet::stereo() &&
-         (input == juce::AudioChannelSet::mono() || input == juce::AudioChannelSet::stereo());
+  if (output != juce::AudioChannelSet::stereo() ||
+      (input != juce::AudioChannelSet::mono() && input != juce::AudioChannelSet::stereo()))
+    return false;
+
+  for (auto busIndex = 1; busIndex < layouts.outputBuses.size(); ++busIndex)
+  {
+    const auto auxOutput = layouts.getChannelSet(false, busIndex);
+    if (!auxOutput.isDisabled() && auxOutput != juce::AudioChannelSet::stereo())
+      return false;
+  }
+
+  return true;
 }
 
 void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
 {
   juce::ScopedNoDenormals noDenormals;
+  meterProcessCounter.fetch_add(1, std::memory_order_relaxed);
 
   const auto totalInputChannels = getTotalNumInputChannels();
   const auto totalOutputChannels = getTotalNumOutputChannels();
@@ -474,6 +614,14 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
   const auto preSaturationAmount = juce::jlimit(0.0f, 100.0f, preSaturationAmountParam->load());
   const auto postSaturationMode = juce::jlimit(0, 3, juce::roundToInt(postSaturationModeParam->load()));
   const auto postSaturationAmount = juce::jlimit(0.0f, 100.0f, postSaturationAmountParam->load());
+  const FatTuneEngine::Settings tuneSettings {
+    tuneEnabledParam->load() >= 0.5f,
+    juce::jlimit(0.0f, 100.0f, tuneAmountParam->load()),
+    juce::jlimit(0, static_cast<int>(tuneKeyLabels.size()) - 1, juce::roundToInt(tuneKeyParam->load())),
+    juce::jlimit(0, static_cast<int>(tuneScaleLabels.size()) - 1, juce::roundToInt(tuneScaleParam->load())),
+    juce::jlimit(0, 4095, juce::roundToInt(tuneCustomNotesParam->load())),
+    juce::jlimit(-24.0f, 24.0f, tunePitchShiftParam->load())
+  };
   const auto peakEnabled = peakEnabledParam->load() >= 0.5f;
   const auto peakThreshold = peakThresholdParam->load();
   const auto glueEnabled = glueEnabledParam->load() >= 0.5f;
@@ -488,6 +636,10 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
   const auto faceEnabled = faceEnabledParam->load() >= 0.5f;
   const auto faceMix = faceThresholdParam->load();
   const auto gateEnabled = gateEnabledParam->load() >= 0.5f;
+  const auto deEsserEnabled = deEsserEnabledParam->load() >= 0.5f;
+  const auto deEsserAmount = juce::jlimit(0.0f, 100.0f, deEsserAmountParam->load());
+  const auto deEsserLow = juce::jlimit(2500.0f, 11600.0f, deEsserLowParam->load());
+  const auto deEsserHigh = juce::jlimit(deEsserLow + 400.0f, 12000.0f, deEsserHighParam->load());
   const auto stereoEnabled = stereoEnabledParam->load() >= 0.5f;
   const auto reverbEnabled = reverbEnabledParam->load() >= 0.5f;
   const auto delayEnabled = delayEnabledParam->load() >= 0.5f;
@@ -516,6 +668,9 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
   const auto delayPostReverb = delayPostReverbParam->load() >= 0.5f;
   const auto delayStyle = juce::jlimit(0, static_cast<int>(delayStyleLabels.size()) - 1,
                                       juce::roundToInt(delayStyleParam->load()));
+  const auto maxAuxBus = juce::jmax(0, juce::jmin(8, getBusCount(false) - 1));
+  const auto delayAuxBus = juce::jlimit(0, maxAuxBus, juce::roundToInt(delayAuxBusParam->load()));
+  const auto reverbAuxBus = juce::jlimit(0, maxAuxBus, juce::roundToInt(reverbAuxBusParam->load()));
   const auto noteMultiplier = delayNoteMode == 1 ? 1.5f : delayNoteMode == 2 ? (2.0f / 3.0f) : 1.0f;
   const auto reverbNoteMultiplier = reverbNoteMode == 1 ? 1.5f : reverbNoteMode == 2 ? (2.0f / 3.0f) : 1.0f;
   const auto delayTimeSeconds =
@@ -552,6 +707,9 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
   auto peakReductionDb = 0.0f;
   auto glueReductionDb = 0.0f;
   auto faceReductionDb = 0.0f;
+  std::array<float, 4> glueBandReductions {};
+  std::array<float, 4> glueBandReductionDbs {};
+  const auto waveformHopSamples = juce::jmax(1, juce::roundToInt(currentSampleRate / 40.0));
 
   if (!stereoEnabled)
   {
@@ -637,9 +795,15 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
   const auto reverbSizeNorm = juce::jlimit(0.0f, 1.0f, reverbSizeSmoothed);
   const auto reverbDecayLift =
       juce::jlimit(0.0f, 1.0f, (reverbDecaySmoothed * reverbSpec.decayScale - 0.35f) / 10.0f);
+  const auto shortDecayAmount = juce::jlimit(0.0f, 1.0f, (0.95f - reverbDecaySmoothed) / 0.75f);
+  const auto shortDecayTightness = shortDecayAmount * shortDecayAmount * (3.0f - 2.0f * shortDecayAmount);
+  const auto shortDecayWetTrim = 1.0f - shortDecayTightness * 0.16f;
+  const auto compactPredelayAddMs = reverbSpec.predelayAddMs * (1.0f - shortDecayTightness * 0.78f);
   const auto reverbWetGain =
-      reverbEnabled ? 1.25f + std::pow(reverbMix, 1.05f) * (2.90f + reverbSizeNorm * 0.75f + reverbDecayLift * 0.80f)
-                    : 1.0f;
+      reverbEnabled
+          ? (1.25f + std::pow(reverbMix, 1.05f) * (2.90f + reverbSizeNorm * 0.75f + reverbDecayLift * 0.80f)) *
+                shortDecayWetTrim
+          : 1.0f;
   const auto delayWetGain =
       delayEnabled ? 1.05f + std::pow(delayMix, 1.08f) * (1.85f + delayFeedback * 1.15f) : 1.0f;
 
@@ -665,6 +829,12 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
     reverbWarmLowStates = {};
     reverbWarmHighStates = {};
     reverbSilkStates = {};
+    reverbWidthBuffer.clear();
+    reverbWidthWritePosition = 0;
+    reverbWidthAllpassLeft = {};
+    reverbWidthAllpassRight = {};
+    reverbWidthModPhases = {};
+    reverbWidthSideLowpass = 0.0f;
   };
 
   if (lastReverbMode != reverbMode)
@@ -820,12 +990,20 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
     return sampleA + (sampleB - sampleA) * fraction;
   };
 
-  auto processDiffuser = [this, &readFractionalSample, reverbSpec, reverbSizeNorm](float input, int channel) {
+  auto processDiffuser = [this, &readFractionalSample, reverbSpec, reverbSizeNorm,
+                          shortDecayTightness](float input, int channel) {
     constexpr std::array<float, 4> baseMs { 8.9f, 17.3f, 31.7f, 49.1f };
     constexpr std::array<float, 4> modOffsets { 0.0f, 1.7f, 3.1f, 5.3f };
     auto output = input;
-    const auto sizeScale = 0.55f + reverbSizeNorm * 1.85f * reverbSpec.roomScale;
-    const auto diffusion = juce::jlimit(0.24f, 0.58f, reverbSpec.diffusion * 0.68f + reverbSizeNorm * 0.055f);
+    const auto compactSizeNorm = reverbSizeNorm * (1.0f - shortDecayTightness * 0.62f);
+    const auto compactRoomScale = 1.0f - shortDecayTightness * 0.36f;
+    const auto sizeScale = (0.42f + compactSizeNorm * 1.45f) * reverbSpec.roomScale * compactRoomScale;
+    const auto baseDiffusion = juce::jlimit(
+        0.20f, 0.58f, (reverbSpec.diffusion * 0.68f + compactSizeNorm * 0.055f) *
+                          (1.0f - shortDecayTightness * 0.18f));
+    const auto channelSkew = channel == 0 ? 0.963f : 1.041f;
+    const auto channelPhase = channel == 0 ? 0.0f : juce::MathConstants<float>::pi * 0.43f;
+    const auto channelOffsetMs = channel == 0 ? -0.37f : 0.53f;
 
     for (auto stage = 0; stage < 4; ++stage)
     {
@@ -833,6 +1011,7 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
       auto& delayBuffer = reverbDiffuserBuffers[index];
       auto& writePosition = reverbDiffuserWritePositions[index];
       auto& phase = reverbDiffuserModPhases[index];
+      const auto diffusion = juce::jlimit(0.22f, 0.62f, baseDiffusion * (channel == 0 ? 0.965f : 1.035f));
 
       const auto rateHz = 0.022f + reverbSpec.modulation * 0.052f + modOffsets[static_cast<size_t>(stage)] * 0.002f;
       phase += 2.0f * juce::MathConstants<float>::pi * rateHz / static_cast<float>(currentSampleRate);
@@ -840,9 +1019,12 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
         phase -= 2.0f * juce::MathConstants<float>::pi;
 
       const auto modSamples =
-          std::sin(phase) * (0.35f + reverbSizeNorm * 2.8f) * reverbSpec.modulation * (stage + 1) * 0.14f;
+          std::sin(phase + channelPhase + static_cast<float>(stage) * 0.19f) * (0.30f + compactSizeNorm * 2.1f) *
+          reverbSpec.modulation * (stage + 1) * 0.14f * (1.0f - shortDecayTightness * 0.62f);
       const auto delaySamples =
-          baseMs[static_cast<size_t>(stage)] * sizeScale * static_cast<float>(currentSampleRate) / 1000.0f +
+          juce::jmax(1.0f, baseMs[static_cast<size_t>(stage)] * sizeScale * channelSkew +
+                               channelOffsetMs * static_cast<float>(stage + 1)) *
+              static_cast<float>(currentSampleRate) / 1000.0f +
           modSamples;
       const auto delayed = readFractionalSample(delayBuffer, writePosition, delaySamples);
       const auto allpassOut = -diffusion * output + delayed;
@@ -858,7 +1040,7 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
   const auto reverbPredelaySamples =
       reverbPredelayBuffer.getNumSamples() > 2
           ? juce::jlimit(0, reverbPredelayBuffer.getNumSamples() - 2,
-                         juce::roundToInt((reverbPredelayMs + reverbSpec.predelayAddMs) *
+                         juce::roundToInt((reverbPredelayMs + compactPredelayAddMs) *
                                           static_cast<float>(currentSampleRate) / 1000.0f))
           : 0;
 
@@ -963,29 +1145,32 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
     return reverbEarlyBuffer.getSample(channel, readPosition);
   };
 
-  auto processEarlyReflections = [this, &readEarlyReflection, reverbSpec, reverbSizeNorm](float inputLeft,
-                                                                                          float inputRight) {
+  auto processEarlyReflections = [this, &readEarlyReflection, reverbSpec, reverbSizeNorm, shortDecayTightness,
+                                  compactPredelayAddMs](float inputLeft, float inputRight) {
     constexpr std::array<float, 8> tapMs { 5.3f, 8.1f, 13.7f, 21.9f, 34.1f, 55.7f, 89.3f, 144.7f };
     constexpr std::array<float, 8> tapGain { 0.36f, -0.31f, 0.27f, -0.23f, 0.19f, -0.15f, 0.11f, -0.08f };
     constexpr std::array<float, 8> pan { -0.68f, 0.42f, -0.18f, 0.74f, -0.52f, 0.24f, 0.58f, -0.36f };
 
     auto earlyLeft = 0.0f;
     auto earlyRight = 0.0f;
-    const auto tapScale = (0.34f + reverbSizeNorm * 1.55f) * reverbSpec.roomScale;
+    const auto compactSizeNorm = reverbSizeNorm * (1.0f - shortDecayTightness * 0.68f);
+    const auto compactRoomScale = 1.0f - shortDecayTightness * 0.52f;
+    const auto tapScale = (0.24f + compactSizeNorm * 0.95f) * reverbSpec.roomScale * compactRoomScale;
 
     for (auto i = 0u; i < tapMs.size(); ++i)
     {
       const auto delaySamples = juce::jlimit(
           1, reverbEarlyBuffer.getNumSamples() - 2,
-          juce::roundToInt((tapMs[i] * tapScale + reverbSpec.predelayAddMs * 0.15f) *
+          juce::roundToInt((tapMs[i] * tapScale + compactPredelayAddMs * 0.15f) *
                            static_cast<float>(currentSampleRate) / 1000.0f));
       const auto reflectedLeft = readEarlyReflection(0, delaySamples);
       const auto reflectedRight = readEarlyReflection(1, delaySamples);
       const auto monoReflection = (reflectedLeft + reflectedRight) * 0.5f;
       const auto leftWeight = 0.5f - pan[i] * 0.28f;
       const auto rightWeight = 0.5f + pan[i] * 0.28f;
-      earlyLeft += (reflectedLeft * 0.62f + monoReflection * 0.38f) * tapGain[i] * leftWeight;
-      earlyRight += (reflectedRight * 0.62f + monoReflection * 0.38f) * tapGain[i] * rightWeight;
+      const auto shortTapDamp = std::exp(-shortDecayTightness * tapMs[i] * 0.035f);
+      earlyLeft += (reflectedLeft * 0.62f + monoReflection * 0.38f) * tapGain[i] * leftWeight * shortTapDamp;
+      earlyRight += (reflectedRight * 0.62f + monoReflection * 0.38f) * tapGain[i] * rightWeight * shortTapDamp;
     }
 
     if (reverbEarlyBuffer.getNumSamples() > 0)
@@ -995,11 +1180,13 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
       reverbEarlyWritePosition = (reverbEarlyWritePosition + 1) % reverbEarlyBuffer.getNumSamples();
     }
 
-    return std::array<float, 2> { earlyLeft * reverbSpec.earlyLevel * 0.58f,
-                                  earlyRight * reverbSpec.earlyLevel * 0.58f };
+    const auto earlyTrim = 0.58f - shortDecayTightness * 0.08f;
+    return std::array<float, 2> { earlyLeft * reverbSpec.earlyLevel * earlyTrim,
+                                  earlyRight * reverbSpec.earlyLevel * earlyTrim };
   };
 
-  auto processReverbTank = [this, &readFractionalSample, reverbSpec, reverbSizeNorm](float inputLeft, float inputRight) {
+  auto processReverbTank = [this, &readFractionalSample, reverbSpec, reverbSizeNorm,
+                            shortDecayTightness](float inputLeft, float inputRight) {
     constexpr std::array<float, 8> baseDelayMs { 31.1f, 37.7f, 43.3f, 53.9f, 61.7f, 73.3f, 89.9f, 107.3f };
     constexpr std::array<float, 8> injectionPan { -0.92f, 0.84f, -0.42f, 0.38f, 0.12f, -0.18f, 0.64f, -0.58f };
     constexpr std::array<float, 8> outputMidTap { 0.92f, 0.84f, 0.78f, 0.70f, 0.64f, 0.58f, 0.52f, 0.46f };
@@ -1007,17 +1194,18 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
 
     std::array<float, 8> tankRead {};
     std::array<float, 8> tankDelaySamples {};
-    const auto sizeCurve = std::pow(reverbSizeNorm, 1.22f);
-    const auto sizeScale = (0.42f + sizeCurve * 2.75f) * reverbSpec.roomScale;
-    const auto tankInputGain = 0.22f + reverbSpec.density * 0.17f;
+    const auto compactSizeNorm = reverbSizeNorm * (1.0f - shortDecayTightness * 0.62f);
+    const auto sizeCurve = std::pow(compactSizeNorm, 1.22f);
+    const auto sizeScale = (0.30f + sizeCurve * 1.78f) * reverbSpec.roomScale * (1.0f - shortDecayTightness * 0.42f);
+    const auto tankInputGain = (0.22f + reverbSpec.density * 0.17f) * (1.0f - shortDecayTightness * 0.44f);
     const auto modeDecaySeconds = juce::jlimit(0.08f, 24.0f, reverbDecaySmoothed * reverbSpec.decayScale);
     const auto modeDecayNorm = juce::jlimit(0.0f, 1.0f, (modeDecaySeconds - 0.08f) / 23.92f);
     const auto dampingCutoff =
         juce::jlimit(1100.0f, static_cast<float>(currentSampleRate) * 0.32f,
-                     reverbSpec.highCutHz * (0.42f + (1.0f - reverbSpec.damping) * 0.28f +
-                                             (1.0f - modeDecayNorm) * 0.07f) +
-                         reverbSizeNorm * 520.0f);
-    const auto lowBloomCutoff = juce::jlimit(95.0f, 520.0f, 155.0f + reverbSizeNorm * 205.0f);
+                         reverbSpec.highCutHz * (0.42f + (1.0f - reverbSpec.damping) * 0.28f +
+                                                 (1.0f - modeDecayNorm) * 0.07f) +
+                         compactSizeNorm * 520.0f);
+    const auto lowBloomCutoff = juce::jlimit(95.0f, 520.0f, 155.0f + compactSizeNorm * 205.0f);
 
     for (auto i = 0; i < 8; ++i)
     {
@@ -1028,7 +1216,8 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
         phase -= 2.0f * juce::MathConstants<float>::pi;
 
       const auto modSamples =
-          std::sin(phase + static_cast<float>(i) * 0.73f) * (1.0f + reverbSizeNorm * 13.0f) * reverbSpec.modulation;
+          std::sin(phase + static_cast<float>(i) * 0.73f) * (0.8f + compactSizeNorm * 10.5f) *
+          reverbSpec.modulation * (1.0f - shortDecayTightness * 0.65f);
       const auto delaySamples =
           baseDelayMs[static_cast<size_t>(i)] * sizeScale * static_cast<float>(currentSampleRate) / 1000.0f +
           modSamples;
@@ -1041,7 +1230,7 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
       auto damped = processOnePoleLowpass(rawDelayed, dampingCutoff * (0.88f + static_cast<float>(i) * 0.035f),
                                           reverbTankHighDampStates[static_cast<size_t>(i)]);
       const auto lowBloom = processOnePoleLowpass(damped, lowBloomCutoff, reverbTankLowDampStates[static_cast<size_t>(i)]);
-      damped = damped * (0.92f - reverbSpec.damping * 0.08f) + lowBloom * (0.08f + reverbSizeNorm * 0.035f);
+      damped = damped * (0.92f - reverbSpec.damping * 0.08f) + lowBloom * (0.08f + compactSizeNorm * 0.035f);
       tankRead[static_cast<size_t>(i)] = damped;
     }
 
@@ -1052,17 +1241,23 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
     auto lateMid = 0.0f;
     auto lateSide = 0.0f;
     const auto monoInput = (inputLeft + inputRight) * 0.5f;
-    const auto tankOutputWidth = 0.52f + reverbSpec.width * 0.34f;
+    const auto tankOutputWidth =
+        juce::jlimit(0.62f, 1.38f, (0.74f + reverbSpec.width * 0.50f) * (1.0f - shortDecayTightness * 0.18f));
 
     for (auto i = 0; i < 8; ++i)
     {
       const auto matrixOut = sum * 0.25f - tankRead[static_cast<size_t>(i)];
       const auto delaySeconds = tankDelaySamples[static_cast<size_t>(i)] / static_cast<float>(currentSampleRate);
       const auto rt60Gain = std::pow(10.0f, -3.0f * delaySeconds / juce::jmax(0.08f, modeDecaySeconds));
-      const auto feedbackGain = juce::jlimit(0.12f, 0.996f, rt60Gain * (0.965f + modeDecayNorm * 0.025f));
+      const auto feedbackFloor = juce::jlimit(0.015f, 0.12f, 0.015f + modeDecayNorm * 0.17f);
+      const auto feedbackGain =
+          juce::jlimit(feedbackFloor, 0.996f,
+                       rt60Gain * (0.965f + modeDecayNorm * 0.025f) * (1.0f - shortDecayTightness * 0.16f));
       const auto panAmount = injectionPan[static_cast<size_t>(i)];
-      const auto injected = monoInput * 0.32f + inputLeft * (0.5f - panAmount * 0.24f) +
-                            inputRight * (0.5f + panAmount * 0.24f);
+      const auto stereoWeighted = inputLeft * (0.5f - panAmount * 0.26f) + inputRight * (0.5f + panAmount * 0.26f);
+      const auto monoSpread = monoInput * panAmount * (0.16f + reverbSpec.spread * 0.11f + compactSizeNorm * 0.08f) *
+                              (1.0f - shortDecayTightness * 0.36f);
+      const auto injected = stereoWeighted * 0.86f + monoInput * 0.18f + monoSpread;
       const auto writeValue = injected * tankInputGain + matrixOut * feedbackGain;
       auto& tankBuffer = reverbTankBuffers[static_cast<size_t>(i)];
       auto& writePosition = reverbTankWritePositions[static_cast<size_t>(i)];
@@ -1074,9 +1269,52 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
       lateSide += tap * outputSideTap[static_cast<size_t>(i)] * tankOutputWidth;
     }
 
-    const auto outputScale = (0.185f + reverbSpec.density * 0.075f) * reverbSpec.lateLevel;
+    const auto outputScale =
+        (0.185f + reverbSpec.density * 0.075f) * reverbSpec.lateLevel * (1.0f - shortDecayTightness * 0.50f);
     return std::array<float, 2> { (lateMid + lateSide) * outputScale, (lateMid - lateSide) * outputScale };
   };
+
+  std::array<juce::AudioBuffer<float>, 9> auxOutputBuffers;
+  for (auto busIndex = 1; busIndex < juce::jmin(static_cast<int>(auxOutputBuffers.size()), getBusCount(false)); ++busIndex)
+    auxOutputBuffers[static_cast<size_t>(busIndex)] = getBusBuffer(buffer, false, busIndex);
+
+  auto protectOutput = [](float sampleValue) {
+    const auto absSample = std::abs(sampleValue);
+    if (absSample <= 0.96f)
+      return sampleValue;
+
+    const auto sign = sampleValue < 0.0f ? -1.0f : 1.0f;
+    const auto limited = 0.96f + std::tanh((absSample - 0.96f) * 2.8f) * 0.04f;
+    return sign * juce::jlimit(0.0f, 0.999f, limited);
+  };
+
+  auto addAuxOutput = [&auxOutputBuffers, outputGain, &protectOutput](int busIndex, int sampleIndex, float left,
+                                                                      float right) {
+    if (busIndex <= 0 || busIndex >= static_cast<int>(auxOutputBuffers.size()))
+      return;
+
+    auto& auxBuffer = auxOutputBuffers[static_cast<size_t>(busIndex)];
+    if (auxBuffer.getNumChannels() < 2)
+      return;
+
+    auxBuffer.addSample(0, sampleIndex, protectOutput(left * outputGain));
+    auxBuffer.addSample(1, sampleIndex, protectOutput(right * outputGain));
+  };
+
+  const auto eqSnapshot = std::atomic_load(&eqSettings);
+  const std::vector<EqBandSettings> emptyEqBands;
+  const auto& preEqBands = eqSnapshot != nullptr ? eqSnapshot->preBands : emptyEqBands;
+  const auto& postEqBands = eqSnapshot != nullptr ? eqSnapshot->postBands : emptyEqBands;
+  const auto surferEqActive = eqBandsNeedPitchTracking(preEqBands) || eqBandsNeedPitchTracking(postEqBands);
+  if (preEqBands.empty())
+    resetEqStates(preEqStates);
+  else
+    prepareEq(preEqStates, preEqBands);
+
+  if (postEqBands.empty())
+    resetEqStates(postEqStates);
+  else
+    prepareEq(postEqStates, postEqBands);
 
   for (auto sample = 0; sample < buffer.getNumSamples(); ++sample)
   {
@@ -1085,9 +1323,28 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
 
     inputPeaks[0] = juce::jmax(inputPeaks[0], std::abs(rawLeft));
     inputPeaks[1] = juce::jmax(inputPeaks[1], std::abs(rawRight));
-
     auto left = rawLeft * inputGain;
     auto right = rawRight * inputGain;
+    auto peakDetectorSample = [](float leftSample, float rightSample) {
+      return juce::jlimit(0.0f, 1.0f, juce::jmax(std::abs(leftSample), std::abs(rightSample)));
+    };
+
+    auto blendedDetectorSample = [](float leftSample, float rightSample, float peakWeight, float rmsWeight) {
+      const auto peakDetector = juce::jmax(std::abs(leftSample), std::abs(rightSample));
+      const auto rmsDetector = std::sqrt((leftSample * leftSample + rightSample * rightSample) * 0.5f);
+      return juce::jlimit(0.0f, 1.0f, peakDetector * peakWeight + rmsDetector * rmsWeight);
+    };
+
+    const auto inputDisplaySample = peakDetectorSample(left, right);
+
+    const auto tuned = tuneEngine.processSample(left, right, tuneSettings, surferEqActive);
+    left = tuned.left;
+    right = tuned.right;
+
+    if (!preEqBands.empty())
+      applyEq(preEqStates, preEqBands, left, right);
+
+    pushSpectrumSample(preCompSpectrumAnalyzer, (left + right) * 0.5f);
 
     auto applyStereoCompressor = [this](float& leftSample, float& rightSample, float thresholdDb, float ratio,
                                         float amountPercent, float attackMs, float releaseMs, float kneeDb,
@@ -1103,6 +1360,7 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
     applyStereoCompressor(left, right, -18.0f, 1.8f, fullAmount, 8.0f, 85.0f, 5.0f, preCompressorState);
     left = applySaturationModel(left, preSaturationMode, preSaturationAmount, preSaturationState, 0);
     right = applySaturationModel(right, preSaturationMode, preSaturationAmount, preSaturationState, 1);
+    const auto peakDisplaySample = peakDetectorSample(left, right);
 
     if (peakEnabled)
     {
@@ -1117,20 +1375,17 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
     {
       peakCompressorState = {};
     }
+    const auto peakOutputDisplaySample = peakDetectorSample(left, right);
+    const auto glueDisplaySample = glueMultiband ? peakDetectorSample(left, right)
+                                                 : blendedDetectorSample(left, right, 0.48f, 0.52f);
+
     if (glueEnabled && glueMultiband)
     {
       std::array<float, 4> leftBands {};
       std::array<float, 4> rightBands {};
 
-      auto splitToBands = [this](float sampleValue, BandSplitState& splitState) {
-        const auto low100 = processOnePoleLowpass(sampleValue, 100.0f, splitState.low100);
-        const auto low1000 = processOnePoleLowpass(sampleValue, 1000.0f, splitState.low1000);
-        const auto low10000 = processOnePoleLowpass(sampleValue, 10000.0f, splitState.low10000);
-        return std::array<float, 4> { low100, low1000 - low100, low10000 - low1000, sampleValue - low10000 };
-      };
-
-      leftBands = splitToBands(left, glueBandSplitStates[0]);
-      rightBands = splitToBands(right, glueBandSplitStates[1]);
+      leftBands = glueBandSplitStates[0].process(left);
+      rightBands = glueBandSplitStates[1].process(right);
 
       left = 0.0f;
       right = 0.0f;
@@ -1146,6 +1401,10 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
         glueLevel = juce::jmax(glueLevel, glueResult.detectorLevel);
         glueReduction = juce::jmax(glueReduction, glueResult.reduction);
         glueReductionDb = juce::jmax(glueReductionDb, glueResult.reductionDb);
+        glueBandReductions[static_cast<size_t>(band)] =
+            juce::jmax(glueBandReductions[static_cast<size_t>(band)], glueResult.reduction);
+        glueBandReductionDbs[static_cast<size_t>(band)] =
+            juce::jmax(glueBandReductionDbs[static_cast<size_t>(band)], glueResult.reductionDb);
       }
     }
     else if (glueEnabled)
@@ -1162,6 +1421,9 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
       glueCompressorState = {};
       glueBandCompressorStates = {};
     }
+    const auto glueOutputDisplaySample = glueMultiband ? peakDetectorSample(left, right)
+                                                       : blendedDetectorSample(left, right, 0.48f, 0.52f);
+    const auto faceDisplaySample = blendedDetectorSample(left, right, 0.32f, 0.68f);
 
     if (faceEnabled)
     {
@@ -1176,10 +1438,31 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
     {
       faceCompressorState = {};
     }
+    const auto faceOutputDisplaySample = blendedDetectorSample(left, right, 0.32f, 0.68f);
+
+    if (deEsserEnabled && deEsserAmount > 0.0f)
+    {
+      applyDeEsser(left, right, deEsserAmount, deEsserLow, deEsserHigh);
+    }
+    else
+    {
+      deEsserLowStates = {};
+      deEsserHighStates = {};
+      deEsserEnvelope = 0.0f;
+      deEsserGain = 1.0f;
+    }
 
     applyStereoCompressor(left, right, -14.0f, 2.2f, fullAmount, 12.0f, 120.0f, 5.0f, postCompressorState);
     left = applySaturationModel(left, postSaturationMode, postSaturationAmount, postSaturationState, 0);
     right = applySaturationModel(right, postSaturationMode, postSaturationAmount, postSaturationState, 1);
+
+    if (!postEqBands.empty())
+      applyEq(postEqStates, postEqBands, left, right);
+
+    pushSpectrumSample(postCompSpectrumAnalyzer, (left + right) * 0.5f);
+
+    const auto gateDisplaySample = blendedDetectorSample(left, right, 0.46f, 0.54f);
+
     // Gate sits after dynamics/saturation so it cleans tails without chopping the performance.
     if (gateEnabled)
     {
@@ -1196,11 +1479,48 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
       gateSmoothedGain = 1.0f;
       gateHoldSamples = 0;
     }
+    const auto gateOutputDisplaySample = blendedDetectorSample(left, right, 0.46f, 0.54f);
+
+    inputWaveformPeak = juce::jmax(inputWaveformPeak, std::abs(inputDisplaySample));
+    peakWaveformPeak = juce::jmax(peakWaveformPeak, std::abs(peakDisplaySample));
+    peakOutputWaveformPeak = juce::jmax(peakOutputWaveformPeak, std::abs(peakOutputDisplaySample));
+    glueWaveformPeak = juce::jmax(glueWaveformPeak, std::abs(glueDisplaySample));
+    glueOutputWaveformPeak = juce::jmax(glueOutputWaveformPeak, std::abs(glueOutputDisplaySample));
+    faceWaveformPeak = juce::jmax(faceWaveformPeak, std::abs(faceDisplaySample));
+    faceOutputWaveformPeak = juce::jmax(faceOutputWaveformPeak, std::abs(faceOutputDisplaySample));
+    gateWaveformPeak = juce::jmax(gateWaveformPeak, std::abs(gateDisplaySample));
+    gateOutputWaveformPeak = juce::jmax(gateOutputWaveformPeak, std::abs(gateOutputDisplaySample));
+
+    if (++waveformDownsampleCounter >= waveformHopSamples)
+    {
+      waveformDownsampleCounter = 0;
+      const auto writeIndex = juce::jlimit(0, waveformSampleCount - 1, waveformWriteIndex.load());
+      storeWaveformSample(inputWaveform, writeIndex, inputWaveformPeak);
+      storeWaveformSample(peakWaveform, writeIndex, peakWaveformPeak);
+      storeWaveformSample(peakOutputWaveform, writeIndex, peakOutputWaveformPeak);
+      storeWaveformSample(glueWaveform, writeIndex, glueWaveformPeak);
+      storeWaveformSample(glueOutputWaveform, writeIndex, glueOutputWaveformPeak);
+      storeWaveformSample(faceWaveform, writeIndex, faceWaveformPeak);
+      storeWaveformSample(faceOutputWaveform, writeIndex, faceOutputWaveformPeak);
+      storeWaveformSample(gateWaveform, writeIndex, gateWaveformPeak);
+      storeWaveformSample(gateOutputWaveform, writeIndex, gateOutputWaveformPeak);
+      waveformWriteIndex.store((writeIndex + 1) % waveformSampleCount);
+      inputWaveformPeak = 0.0f;
+      peakWaveformPeak = 0.0f;
+      peakOutputWaveformPeak = 0.0f;
+      glueWaveformPeak = 0.0f;
+      glueOutputWaveformPeak = 0.0f;
+      faceWaveformPeak = 0.0f;
+      faceOutputWaveformPeak = 0.0f;
+      gateWaveformPeak = 0.0f;
+      gateOutputWaveformPeak = 0.0f;
+    }
 
     if (stereoEnabled && totalInputChannels == 1 && totalOutputChannels > 1)
     {
       const auto mono = (left + right) * 0.5f;
-      const auto lowAnchor = stereoLowBypassHz > 0.5f ? processOnePoleLowpass(mono, stereoLowBypassHz, monoWidenSideLowpass) : 0.0f;
+      const auto lowAnchor =
+          stereoLowBypassHz > 0.5f ? processOnePoleLowpass(mono, stereoLowBypassHz, monoWidenSideLowpass) : 0.0f;
       const auto widenInput = mono - lowAnchor;
 
       auto processAllpass = [](float input, float coefficient, float& state) {
@@ -1227,8 +1547,8 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
       const auto wetGain = std::sin(widthCurve * juce::MathConstants<float>::halfPi);
       const auto centerAnchor = wetGain * 0.08f;
       const auto crossfeed = wetGain * 0.045f;
-      const auto mainWet = wetGain * (1.0f - 0.045f);
       const auto centerGain = dryGain + centerAnchor;
+      const auto mainWet = wetGain * 0.92f;
       const auto makeup = 1.0f / std::sqrt(centerGain * centerGain + mainWet * mainWet + crossfeed * crossfeed);
       left = lowAnchor + (widenInput * centerGain + decorrelatedLeft * mainWet + decorrelatedRight * crossfeed) * makeup;
       right = lowAnchor + (widenInput * centerGain + decorrelatedRight * mainWet + decorrelatedLeft * crossfeed) * makeup;
@@ -1239,7 +1559,8 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
       const auto widthCurve = std::pow(stereoWidth, 0.72f);
       const auto sideMultiplier = widthCurve * 2.35f;
       const auto rawSide = (left - right) * 0.5f;
-      const auto lowSide = stereoLowBypassHz > 0.5f ? processOnePoleLowpass(rawSide, stereoLowBypassHz, monoWidenSideLowpass) : 0.0f;
+      const auto lowSide =
+          stereoLowBypassHz > 0.5f ? processOnePoleLowpass(rawSide, stereoLowBypassHz, monoWidenSideLowpass) : 0.0f;
       const auto side = lowSide * widthCurve + (rawSide - lowSide) * sideMultiplier;
       const auto makeup = 1.0f / std::sqrt(1.0f + sideMultiplier * sideMultiplier * 0.08f);
       left = (mid + side) * makeup;
@@ -1265,17 +1586,24 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
       const auto wetLevel = std::sin(clampedMix * juce::MathConstants<float>::halfPi) * wetGain;
       return dry * dryGain + wet * wetLevel;
     };
+    auto wetOnlyStage = [](float wet, float mix, float wetGain) {
+      const auto clampedMix = juce::jlimit(0.0f, 1.0f, mix);
+      return wet * std::sin(clampedMix * juce::MathConstants<float>::halfPi) * wetGain;
+    };
 
     auto processReverbWet = [&](float inputLeft, float inputRight) {
       if (!reverbEnabled)
         return std::array<float, 2> { 0.0f, 0.0f };
 
-      const auto stableSend = stabilizeStereoReturn(inputLeft, inputRight, 0.42f);
-      auto reverbInputLeft = stableSend[0];
-      auto reverbInputRight = stableSend[1];
-      const auto reverbMonoSend = (reverbInputLeft + reverbInputRight) * 0.5f;
-      reverbInputLeft = reverbInputLeft * (1.0f - reverbSpec.spread) + reverbMonoSend * reverbSpec.spread;
-      reverbInputRight = reverbInputRight * (1.0f - reverbSpec.spread) + reverbMonoSend * reverbSpec.spread;
+      const auto stableSend = stabilizeStereoReturn(inputLeft, inputRight, 0.92f);
+      const auto sendMid = (stableSend[0] + stableSend[1]) * 0.5f;
+      const auto sendSide = (stableSend[0] - stableSend[1]) * 0.5f;
+      const auto sendSideScale = juce::jlimit(0.66f, 1.32f, 0.78f + reverbSpec.width * 0.34f);
+      const auto crossfeed = juce::jlimit(0.04f, 0.24f, 0.08f + reverbSpec.spread * 0.10f);
+      const auto spreadLeft = sendMid + sendSide * sendSideScale;
+      const auto spreadRight = sendMid - sendSide * sendSideScale;
+      auto reverbInputLeft = spreadLeft * (1.0f - crossfeed) + spreadRight * crossfeed;
+      auto reverbInputRight = spreadRight * (1.0f - crossfeed) + spreadLeft * crossfeed;
 
       const auto early = processEarlyReflections(reverbInputLeft, reverbInputRight);
 
@@ -1298,10 +1626,83 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
       const auto tonedLeft = processReverbTone(wetRawLeft, 0);
       const auto tonedRight = processReverbTone(wetRawRight, 1);
       const auto wetMid = (tonedLeft + tonedRight) * 0.5f;
-      const auto wetSide =
-          (tonedLeft - tonedRight) * 0.5f * juce::jlimit(0.12f, 0.64f, 0.24f + reverbSpec.width * 0.32f);
-      const auto centeredLeft = (wetMid + wetSide) * reverbMakeupGain;
-      const auto centeredRight = (wetMid - wetSide) * reverbMakeupGain;
+      const auto naturalSide = (tonedLeft - tonedRight) * 0.5f;
+
+      auto processWidthAllpass = [](float input, float coefficient, float& state) {
+        const auto output = -coefficient * input + state;
+        state = input + coefficient * output;
+        return output;
+      };
+
+      auto decorrelateWidth = [&processWidthAllpass](float input, std::array<float, 4>& states,
+                                                     const std::array<float, 4>& coefficients) {
+        auto output = input;
+        for (auto i = 0u; i < states.size(); ++i)
+          output = processWidthAllpass(output, coefficients[i], states[i]);
+        return output;
+      };
+
+      auto readReverbWidthDelay = [this, &readFractionalSample](float delayInSamples) {
+        if (reverbWidthBuffer.getNumSamples() <= 2)
+          return 0.0f;
+
+        return readFractionalSample(reverbWidthBuffer, reverbWidthWritePosition, delayInSamples);
+      };
+
+      const auto twoPi = 2.0f * juce::MathConstants<float>::pi;
+      reverbWidthModPhases[0] += twoPi * (0.061f + reverbSpec.modulation * 0.017f) / static_cast<float>(currentSampleRate);
+      reverbWidthModPhases[1] += twoPi * (0.087f + reverbSpec.modulation * 0.023f) / static_cast<float>(currentSampleRate);
+      if (reverbWidthModPhases[0] > twoPi)
+        reverbWidthModPhases[0] -= twoPi;
+      if (reverbWidthModPhases[1] > twoPi)
+        reverbWidthModPhases[1] -= twoPi;
+
+      const auto widthDelayScale =
+          (0.82f + reverbSizeNorm * 0.78f + reverbSpec.roomScale * 0.16f) *
+          (1.0f - shortDecayTightness * 0.55f);
+      const auto widthModDepthMs =
+          (0.34f + reverbSpec.modulation * (0.56f + reverbSizeNorm * 0.42f)) *
+          (1.0f - shortDecayTightness * 0.62f);
+      const auto widthDelayLeftMs =
+          18.7f * widthDelayScale + std::sin(reverbWidthModPhases[0]) * widthModDepthMs;
+      const auto widthDelayRightMs =
+          31.3f * widthDelayScale +
+          std::sin(reverbWidthModPhases[1] + juce::MathConstants<float>::pi * 0.31f) * widthModDepthMs;
+      const auto widthTapLeft =
+          readReverbWidthDelay(widthDelayLeftMs * static_cast<float>(currentSampleRate) / 1000.0f);
+      const auto widthTapRight =
+          readReverbWidthDelay(widthDelayRightMs * static_cast<float>(currentSampleRate) / 1000.0f);
+
+      if (reverbWidthBuffer.getNumSamples() > 2)
+      {
+        reverbWidthBuffer.setSample(0, reverbWidthWritePosition, juce::jlimit(-1.4f, 1.4f, wetMid));
+        reverbWidthWritePosition = (reverbWidthWritePosition + 1) % reverbWidthBuffer.getNumSamples();
+      }
+
+      constexpr std::array<float, 4> widthLeftCoefficients { 0.527f, 0.713f, 0.842f, 0.931f };
+      constexpr std::array<float, 4> widthRightCoefficients { 0.431f, 0.659f, 0.809f, 0.913f };
+      const auto decorrelatedLeft =
+          decorrelateWidth(widthTapLeft * 0.82f + wetMid * 0.18f, reverbWidthAllpassLeft, widthLeftCoefficients);
+      const auto decorrelatedRight =
+          decorrelateWidth(widthTapRight * 0.82f + wetMid * 0.18f, reverbWidthAllpassRight, widthRightCoefficients);
+      const auto decorrelatedSide = (decorrelatedLeft - decorrelatedRight) * 0.5f;
+      const auto lowSide =
+          processOnePoleLowpass(decorrelatedSide, 150.0f + reverbSizeNorm * 70.0f, reverbWidthSideLowpass);
+      const auto airyDecorrelatedSide = decorrelatedSide - lowSide * 0.72f;
+      const auto naturalSideGain =
+          juce::jlimit(2.6f, 7.4f, 3.15f + reverbSpec.width * 2.2f + reverbSpec.spread * 1.08f +
+                                       reverbSizeNorm * 0.92f) *
+          (1.0f - shortDecayTightness * 0.10f);
+      const auto decorrelatedSideGain =
+          juce::jlimit(0.62f, 2.85f,
+                       0.78f + reverbSpec.width * 0.70f + reverbSpec.spread * 0.55f + reverbSizeNorm * 0.42f +
+                           reverbDecayLift * 0.22f) *
+          (1.0f - shortDecayTightness * 0.42f);
+      const auto wetSideRaw = naturalSide * naturalSideGain + airyDecorrelatedSide * decorrelatedSideGain;
+      const auto wetSide = std::tanh(wetSideRaw * 0.82f) / 0.82f;
+      const auto widthMakeup = 1.0f / std::sqrt(1.0f + decorrelatedSideGain * 0.055f + naturalSideGain * 0.018f);
+      const auto centeredLeft = (wetMid + wetSide) * reverbMakeupGain * widthMakeup;
+      const auto centeredRight = (wetMid - wetSide) * reverbMakeupGain * widthMakeup;
       return std::array<float, 2> { centeredLeft, centeredRight };
     };
 
@@ -1318,31 +1719,67 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
     auto delayInputRight = stableDelaySend[1];
     auto preOutputLeft = dryLeft;
     auto preOutputRight = dryRight;
+    const auto delayIsExternal = delayEnabled && delayAuxBus > 0;
+    const auto reverbIsExternal = reverbEnabled && reverbAuxBus > 0;
 
     if (delayPostReverb)
     {
       const auto reverbReturn = processReverbWet(dryLeft, dryRight);
-      const auto reverbStageLeft = reverbEnabled ? mixStage(dryLeft, reverbReturn[0], reverbMix, reverbWetGain) : dryLeft;
+      const auto reverbWetLeft = reverbEnabled ? wetOnlyStage(reverbReturn[0], reverbMix, reverbWetGain) : 0.0f;
+      const auto reverbWetRight = reverbEnabled ? wetOnlyStage(reverbReturn[1], reverbMix, reverbWetGain) : 0.0f;
+      if (reverbIsExternal)
+        addAuxOutput(reverbAuxBus, sample, reverbWetLeft, reverbWetRight);
+
+      const auto reverbStageLeft =
+          reverbEnabled ? (reverbIsExternal ? dryLeft : mixStage(dryLeft, reverbReturn[0], reverbMix, reverbWetGain))
+                        : dryLeft;
       const auto reverbStageRight =
-          reverbEnabled ? mixStage(dryRight, reverbReturn[1], reverbMix, reverbWetGain) : dryRight;
+          reverbEnabled ? (reverbIsExternal ? dryRight : mixStage(dryRight, reverbReturn[1], reverbMix, reverbWetGain))
+                        : dryRight;
       const auto stablePostReverbDelaySend =
           stabilizeStereoReturn(reverbStageLeft, reverbStageRight, delayMode == 1 ? 0.76f : 0.64f);
       delayInputLeft = stablePostReverbDelaySend[0];
       delayInputRight = stablePostReverbDelaySend[1];
-      preOutputLeft = delayEnabled ? mixStage(reverbStageLeft, delayReturnLeft, delayMix, delayWetGain) : reverbStageLeft;
+      const auto delayWetLeft = delayEnabled ? wetOnlyStage(delayReturnLeft, delayMix, delayWetGain) : 0.0f;
+      const auto delayWetRight = delayEnabled ? wetOnlyStage(delayReturnRight, delayMix, delayWetGain) : 0.0f;
+      if (delayIsExternal)
+        addAuxOutput(delayAuxBus, sample, delayWetLeft, delayWetRight);
+
+      preOutputLeft =
+          delayEnabled ? (delayIsExternal ? reverbStageLeft : mixStage(reverbStageLeft, delayReturnLeft, delayMix, delayWetGain))
+                       : reverbStageLeft;
       preOutputRight =
-          delayEnabled ? mixStage(reverbStageRight, delayReturnRight, delayMix, delayWetGain) : reverbStageRight;
+          delayEnabled ? (delayIsExternal ? reverbStageRight : mixStage(reverbStageRight, delayReturnRight, delayMix, delayWetGain))
+                       : reverbStageRight;
     }
     else
     {
       delayInputLeft = stableDelaySend[0];
       delayInputRight = stableDelaySend[1];
-      const auto delayStageLeft = delayEnabled ? mixStage(dryLeft, delayReturnLeft, delayMix, delayWetGain) : dryLeft;
-      const auto delayStageRight = delayEnabled ? mixStage(dryRight, delayReturnRight, delayMix, delayWetGain) : dryRight;
+      const auto delayWetLeft = delayEnabled ? wetOnlyStage(delayReturnLeft, delayMix, delayWetGain) : 0.0f;
+      const auto delayWetRight = delayEnabled ? wetOnlyStage(delayReturnRight, delayMix, delayWetGain) : 0.0f;
+      if (delayIsExternal)
+        addAuxOutput(delayAuxBus, sample, delayWetLeft, delayWetRight);
+
+      const auto delayStageLeft =
+          delayEnabled ? (delayIsExternal ? dryLeft : mixStage(dryLeft, delayReturnLeft, delayMix, delayWetGain)) : dryLeft;
+      const auto delayStageRight =
+          delayEnabled ? (delayIsExternal ? dryRight : mixStage(dryRight, delayReturnRight, delayMix, delayWetGain))
+                       : dryRight;
       const auto reverbReturn = processReverbWet(delayStageLeft, delayStageRight);
-      preOutputLeft = reverbEnabled ? mixStage(delayStageLeft, reverbReturn[0], reverbMix, reverbWetGain) : delayStageLeft;
+      const auto reverbWetLeft = reverbEnabled ? wetOnlyStage(reverbReturn[0], reverbMix, reverbWetGain) : 0.0f;
+      const auto reverbWetRight = reverbEnabled ? wetOnlyStage(reverbReturn[1], reverbMix, reverbWetGain) : 0.0f;
+      if (reverbIsExternal)
+        addAuxOutput(reverbAuxBus, sample, reverbWetLeft, reverbWetRight);
+
+      preOutputLeft =
+          reverbEnabled
+              ? (reverbIsExternal ? delayStageLeft : mixStage(delayStageLeft, reverbReturn[0], reverbMix, reverbWetGain))
+              : delayStageLeft;
       preOutputRight =
-          reverbEnabled ? mixStage(delayStageRight, reverbReturn[1], reverbMix, reverbWetGain) : delayStageRight;
+          reverbEnabled
+              ? (reverbIsExternal ? delayStageRight : mixStage(delayStageRight, reverbReturn[1], reverbMix, reverbWetGain))
+              : delayStageRight;
     }
 
     if (delayEnabled)
@@ -1376,15 +1813,6 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
 
     const auto outputLeft = preOutputLeft * outputGain;
     const auto outputRight = preOutputRight * outputGain;
-    auto protectOutput = [](float sampleValue) {
-      const auto absSample = std::abs(sampleValue);
-      if (absSample <= 0.96f)
-        return sampleValue;
-
-      const auto sign = sampleValue < 0.0f ? -1.0f : 1.0f;
-      const auto limited = 0.96f + std::tanh((absSample - 0.96f) * 2.8f) * 0.04f;
-      return sign * juce::jlimit(0.0f, 0.999f, limited);
-    };
 
     const std::array<float, 2> outputs {
       protectOutput(outputLeft),
@@ -1406,13 +1834,21 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
   if (meteredOutputChannels == 1)
     outputPeaks[1] = outputPeaks[0];
 
+  const auto tuneMeters = tuneEngine.getMeters();
+  tuneFrequencyMeter.store(tuneMeters.frequency);
+  tuneCentsMeter.store(tuneMeters.cents);
+  tuneConfidenceMeter.store(tuneMeters.confidence);
+  tuneTargetMidiMeter.store(tuneMeters.targetMidi);
+
+  const auto blockSamples = buffer.getNumSamples();
+  visualSilenceActive.store(false);
+
   for (auto i = 0; i < 2; ++i)
   {
     updateAtomicPeak(inputMeterPeaks[static_cast<size_t>(i)], inputPeaks[static_cast<size_t>(i)]);
     updateAtomicPeak(outputMeterPeaks[static_cast<size_t>(i)], outputPeaks[static_cast<size_t>(i)]);
   }
 
-  const auto blockSamples = buffer.getNumSamples();
   auto updateStageMeter = [this, blockSamples](bool enabled, std::atomic<float>& reductionMeter,
                                                std::atomic<float>& reductionDbMeter, std::atomic<float>& levelMeter,
                                                float reduction, float reductionDb, float level, float attackMs,
@@ -1438,11 +1874,27 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
                    glueReductionDb, glueLevel, 8.0f, 280.0f);
   updateStageMeter(faceEnabled, faceReductionMeter, faceReductionDbMeter, faceLevelMeter, faceReduction,
                    faceReductionDb, faceLevel, 6.0f, 240.0f);
+
+  for (auto band = 0u; band < glueBandReductionMeters.size(); ++band)
+  {
+    if (!glueEnabled || !glueMultiband)
+    {
+      glueBandReductionMeters[band].store(0.0f);
+      glueBandReductionDbMeters[band].store(0.0f);
+      continue;
+    }
+
+    updateAtomicBallistic(glueBandReductionMeters[band], glueBandReductions[band], currentSampleRate, blockSamples,
+                          8.0f, 280.0f);
+    updateAtomicBallistic(glueBandReductionDbMeters[band], glueBandReductionDbs[band], currentSampleRate, blockSamples,
+                          8.0f, 280.0f);
+  }
 }
 
 void VoxanovaAudioProcessor::processBlockBypassed(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
 {
   juce::ScopedNoDenormals noDenormals;
+  meterProcessCounter.fetch_add(1, std::memory_order_relaxed);
 
   const auto totalInputChannels = getTotalNumInputChannels();
   const auto totalOutputChannels = getTotalNumOutputChannels();
@@ -1456,7 +1908,7 @@ void VoxanovaAudioProcessor::processBlockBypassed(juce::AudioBuffer<float>& buff
     if (!(totalInputChannels == 1 && channel == 1))
       buffer.clear(channel, 0, buffer.getNumSamples());
 
-  clearMeters();
+  clearVisualState();
 }
 
 juce::AudioProcessorEditor* VoxanovaAudioProcessor::createEditor()
@@ -1519,15 +1971,201 @@ void VoxanovaAudioProcessor::changeProgramName(int, const juce::String&)
 
 void VoxanovaAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
-  if (auto state = parameters.copyState(); auto xml = state.createXml())
+  auto state = parameters.copyState();
+
+  if (auto snapshot = std::atomic_load(&eqSettings))
+    state.setProperty("eqBands", serializeEqBands(*snapshot), nullptr);
+
+  if (auto xml = state.createXml())
     copyXmlToBinary(*xml, destData);
 }
 
 void VoxanovaAudioProcessor::setStateInformation(const void* data, int sizeInBytes)
 {
   if (auto xml = getXmlFromBinary(data, sizeInBytes))
+  {
     if (xml->hasTagName(parameters.state.getType()))
-      parameters.replaceState(juce::ValueTree::fromXml(*xml));
+    {
+      auto state = juce::ValueTree::fromXml(*xml);
+      const auto eqBandsJson = state.getProperty("eqBands", {}).toString();
+      parameters.replaceState(state);
+
+      if (eqBandsJson.isNotEmpty())
+        setEqBandsFromVar(juce::JSON::parse(eqBandsJson));
+      else
+        setEqBandsFromVar(juce::var(new juce::DynamicObject()));
+    }
+  }
+}
+
+std::vector<VoxanovaAudioProcessor::EqBandSettings> VoxanovaAudioProcessor::parseEqBandArray(const juce::var& bands)
+{
+  std::vector<EqBandSettings> parsed;
+  const auto* array = bands.getArray();
+
+  if (array == nullptr)
+    return parsed;
+
+  parsed.reserve(static_cast<size_t>(array->size()));
+
+  auto readFloat = [](const juce::var& object, const juce::Identifier& id, float defaultValue) {
+    const auto value = object.getProperty(id, defaultValue);
+    if (value.isVoid())
+      return defaultValue;
+    return static_cast<float>(value);
+  };
+
+  auto readBool = [](const juce::var& object, const juce::Identifier& id, bool defaultValue) {
+    const auto value = object.getProperty(id, defaultValue);
+    if (value.isBool())
+      return static_cast<bool>(value);
+    if (value.isString())
+    {
+      const auto text = value.toString();
+      if (text.equalsIgnoreCase("false") || text == "0" || text.equalsIgnoreCase("off"))
+        return false;
+      if (text.equalsIgnoreCase("true") || text == "1" || text.equalsIgnoreCase("on"))
+        return true;
+    }
+    return static_cast<float>(value) >= 0.5f;
+  };
+
+  auto readType = [](const juce::var& object) {
+    const auto value = object.getProperty("type", "Bell");
+
+    if (!value.isString())
+      return juce::jlimit(0, static_cast<int>(eqFilterTypeLabels.size()) - 1,
+                          juce::roundToInt(static_cast<float>(value)));
+
+    const auto text = value.toString();
+    for (auto index = 0; index < static_cast<int>(eqFilterTypeLabels.size()); ++index)
+      if (text.equalsIgnoreCase(eqFilterTypeLabels[static_cast<size_t>(index)]))
+        return index;
+
+    return 0;
+  };
+
+  auto defaultQForType = [](int type) {
+    return type == 5 || type == 6 ? 1.3f : 5.0f;
+  };
+
+  auto defaultSlopeForType = [](int type) {
+    return type == 3 ? 30 : 12;
+  };
+
+  auto readSlope = [&defaultSlopeForType](const juce::var& object, int type) {
+    const auto value = object.getProperty("slope", defaultSlopeForType(type));
+    if (value.isString() && value.toString().equalsIgnoreCase("wall"))
+      return VoxanovaAudioProcessor::eqWallSlopeDb;
+
+    return juce::jlimit(6, VoxanovaAudioProcessor::eqWallSlopeDb, juce::roundToInt(static_cast<float>(value)));
+  };
+
+  for (const auto& band : *array)
+  {
+    EqBandSettings settings;
+    settings.enabled = readBool(band, "on", true) && readBool(band, "enabled", true);
+    settings.solo = readBool(band, "solo", false);
+    settings.type = readType(band);
+    if (settings.type == 2)
+      continue;
+
+    settings.frequency = juce::jlimit(20.0f, 20000.0f, readFloat(band, "freq", 1000.0f));
+    settings.gainDb = juce::jlimit(-30.0f, 30.0f, readFloat(band, "gain", 0.0f));
+    settings.q = juce::jlimit(0.1f, 50.0f, readFloat(band, "q", defaultQForType(settings.type)));
+    settings.compDb = juce::jlimit(-30.0f, 30.0f, readFloat(band, "comp", 0.0f));
+    const auto legacyCompEnabled = std::abs(settings.compDb) > 0.05f &&
+                                   std::abs(settings.compDb - settings.gainDb) > 0.05f;
+    settings.compEnabled = readBool(band, "compEnabled", legacyCompEnabled);
+    settings.compThresholdDb = juce::jlimit(-60.0f, 0.0f, readFloat(band, "compThreshold", -18.0f));
+    settings.compAttackMs = juce::jlimit(0.1f, 200.0f, readFloat(band, "compAttack", 12.0f));
+    settings.compReleaseMs = juce::jlimit(5.0f, 1000.0f, readFloat(band, "compRelease", 140.0f));
+    settings.compRatio = juce::jlimit(1.0f, 20.0f, readFloat(band, "compRatio", 4.0f));
+    settings.slopeDb = readSlope(band, settings.type);
+    settings.thresholdDb = juce::jlimit(-60.0f, 0.0f, readFloat(band, "threshold", -24.0f));
+    settings.intensity = juce::jlimit(0.0f, 100.0f, readFloat(band, "intensity", 50.0f));
+    const auto deessMode = band.getProperty("deessMode", "split").toString();
+    settings.deessMode = deessMode.equalsIgnoreCase("wider") || deessMode == "1" ? 1 : 0;
+    settings.surfRatio = juce::jlimit(0.0f, 128.0f, readFloat(band, "surfRatio", 0.0f));
+
+    parsed.push_back(settings);
+  }
+
+  return parsed;
+}
+
+juce::var VoxanovaAudioProcessor::eqBandArrayToVar(const std::vector<EqBandSettings>& bands)
+{
+  juce::Array<juce::var> array;
+  array.ensureStorageAllocated(static_cast<int>(bands.size()));
+
+  for (const auto& band : bands)
+  {
+    auto object = juce::DynamicObject::Ptr(new juce::DynamicObject());
+    const auto typeIndex = juce::jlimit(0, static_cast<int>(eqFilterTypeLabels.size()) - 1, band.type);
+    object->setProperty("type", eqFilterTypeLabels[static_cast<size_t>(typeIndex)]);
+    object->setProperty("freq", band.frequency);
+    object->setProperty("gain", band.gainDb);
+    object->setProperty("q", band.q);
+    object->setProperty("solo", band.solo);
+    object->setProperty("comp", band.compDb);
+    object->setProperty("compEnabled", band.compEnabled);
+    object->setProperty("compThreshold", band.compThresholdDb);
+    object->setProperty("compAttack", band.compAttackMs);
+    object->setProperty("compRelease", band.compReleaseMs);
+    object->setProperty("compRatio", band.compRatio);
+    object->setProperty("slope", band.slopeDb >= eqWallSlopeDb ? juce::var("wall") : juce::var(band.slopeDb));
+    object->setProperty("threshold", band.thresholdDb);
+    object->setProperty("intensity", band.intensity);
+    object->setProperty("deessMode", band.deessMode == 1 ? "wider" : "split");
+    if (band.surfRatio > 0.0f)
+      object->setProperty("surfRatio", band.surfRatio);
+    object->setProperty("on", band.enabled);
+    object->setProperty("placement", "stereo");
+    array.add(juce::var(object.get()));
+  }
+
+  return juce::var(array);
+}
+
+juce::String VoxanovaAudioProcessor::serializeEqBands(const EqSettings& settings)
+{
+  auto object = juce::DynamicObject::Ptr(new juce::DynamicObject());
+  object->setProperty("pre", eqBandArrayToVar(settings.preBands));
+  object->setProperty("post", eqBandArrayToVar(settings.postBands));
+  return juce::JSON::toString(juce::var(object.get()), false);
+}
+
+juce::var VoxanovaAudioProcessor::getEqBandsState() const
+{
+  auto snapshot = std::atomic_load(&eqSettings);
+  auto object = juce::DynamicObject::Ptr(new juce::DynamicObject());
+
+  if (snapshot != nullptr)
+  {
+    object->setProperty("pre", eqBandArrayToVar(snapshot->preBands));
+    object->setProperty("post", eqBandArrayToVar(snapshot->postBands));
+  }
+  else
+  {
+    object->setProperty("pre", juce::var(juce::Array<juce::var>()));
+    object->setProperty("post", juce::var(juce::Array<juce::var>()));
+  }
+
+  return juce::var(object.get());
+}
+
+void VoxanovaAudioProcessor::setEqBandsFromVar(const juce::var& payload)
+{
+  auto source = payload;
+  if (source.isString())
+    source = juce::JSON::parse(source.toString());
+
+  auto next = std::make_shared<EqSettings>();
+  next->preBands = parseEqBandArray(source.getProperty("pre", {}));
+  next->postBands = parseEqBandArray(source.getProperty("post", {}));
+  std::shared_ptr<const EqSettings> immutableNext = std::move(next);
+  std::atomic_store(&eqSettings, immutableNext);
 }
 
 float VoxanovaAudioProcessor::dbToGain(float db)
@@ -1585,6 +2223,196 @@ void VoxanovaAudioProcessor::updateAtomicBallistic(std::atomic<float>& target, f
   target.store(juce::jlimit(0.0f, 100.0f, smoothed));
 }
 
+void VoxanovaAudioProcessor::clearWaveform(std::array<std::atomic<float>, waveformSampleCount>& waveform)
+{
+  for (auto& sample : waveform)
+    sample.store(0.0f);
+}
+
+void VoxanovaAudioProcessor::storeWaveformSample(std::array<std::atomic<float>, waveformSampleCount>& waveform,
+                                                 int index, float value)
+{
+  const auto clampedIndex = juce::jlimit(0, waveformSampleCount - 1, index);
+  waveform[static_cast<size_t>(clampedIndex)].store(juce::jlimit(-1.0f, 1.0f, value));
+}
+
+void VoxanovaAudioProcessor::copyWaveform(const std::array<std::atomic<float>, waveformSampleCount>& source,
+                                          std::array<float, waveformSampleCount>& destination, int writeIndex)
+{
+  const auto clampedWriteIndex = juce::jlimit(0, waveformSampleCount - 1, writeIndex);
+  for (auto i = 0; i < waveformSampleCount; ++i)
+  {
+    const auto index = (clampedWriteIndex + i) % waveformSampleCount;
+    destination[static_cast<size_t>(i)] = source[static_cast<size_t>(index)].load();
+  }
+}
+
+void VoxanovaAudioProcessor::clearSpectrum(std::array<std::atomic<float>, spectrumBinCount>& spectrum)
+{
+  for (auto& bin : spectrum)
+    bin.store(0.0f);
+}
+
+void VoxanovaAudioProcessor::copySpectrum(const std::array<std::atomic<float>, spectrumBinCount>& source,
+                                          std::array<float, spectrumBinCount>& destination)
+{
+  for (auto i = 0; i < spectrumBinCount; ++i)
+    destination[static_cast<size_t>(i)] = source[static_cast<size_t>(i)].load();
+}
+
+void VoxanovaAudioProcessor::prepareSpectrum(SpectrumAnalyzerState& analyzer)
+{
+  std::fill(analyzer.ring.begin(), analyzer.ring.end(), 0.0f);
+  std::fill(analyzer.smoothed.begin(), analyzer.smoothed.end(), 0.0f);
+  analyzer.writePosition = 0;
+  analyzer.hopCounter = 0;
+  clearSpectrum(analyzer.bins);
+}
+
+void VoxanovaAudioProcessor::prepareSpectra()
+{
+  for (auto i = 0; i < spectrumFftSize; ++i)
+  {
+    spectrumWindow[static_cast<size_t>(i)] =
+        0.5f - 0.5f * std::cos(2.0f * juce::MathConstants<float>::pi * static_cast<float>(i) /
+                               static_cast<float>(spectrumFftSize - 1));
+  }
+
+  prepareSpectrum(preCompSpectrumAnalyzer);
+  prepareSpectrum(postCompSpectrumAnalyzer);
+}
+
+void VoxanovaAudioProcessor::clearSpectrumAnalyzer(SpectrumAnalyzerState& analyzer)
+{
+  clearSpectrum(analyzer.bins);
+  std::fill(analyzer.smoothed.begin(), analyzer.smoothed.end(), 0.0f);
+}
+
+void VoxanovaAudioProcessor::pushSpectrumSample(SpectrumAnalyzerState& analyzer, float sample)
+{
+  analyzer.ring[static_cast<size_t>(analyzer.writePosition)] =
+      juce::jlimit(-2.0f, 2.0f, std::isfinite(sample) ? sample : 0.0f);
+  analyzer.writePosition = (analyzer.writePosition + 1) % spectrumFftSize;
+
+  if (++analyzer.hopCounter >= spectrumHopSize)
+  {
+    analyzer.hopCounter = 0;
+    analyseSpectrum(analyzer);
+  }
+}
+
+void VoxanovaAudioProcessor::analyseSpectrum(SpectrumAnalyzerState& analyzer)
+{
+  if (currentSampleRate <= 1000.0)
+    return;
+
+  std::array<float, spectrumFftSize * 2> fftFrame {};
+  auto windowSum = 0.0f;
+
+  for (auto i = 0; i < spectrumFftSize; ++i)
+  {
+    const auto readIndex = (analyzer.writePosition + i) % spectrumFftSize;
+    const auto window = spectrumWindow[static_cast<size_t>(i)];
+    fftFrame[static_cast<size_t>(i)] = analyzer.ring[static_cast<size_t>(readIndex)] * window;
+    windowSum += window;
+  }
+
+  spectrumFft.performFrequencyOnlyForwardTransform(fftFrame.data(), true);
+
+  const auto maxFftBin = spectrumFftSize / 2 - 1;
+  const auto maxSpectrumFrequency = juce::jmin(20000.0f, static_cast<float>(currentSampleRate * 0.5 - 1.0));
+  const auto analysisIntervalSeconds = static_cast<float>(spectrumHopSize) /
+                                       juce::jmax(1.0f, static_cast<float>(currentSampleRate));
+  const auto attackCoeff = std::exp(-analysisIntervalSeconds / 0.026f);
+  const auto releaseCoeff = std::exp(-analysisIntervalSeconds / 0.62f);
+  const auto frequencyToBin = [this](float frequency) {
+    return frequency / static_cast<float>(currentSampleRate) * static_cast<float>(spectrumFftSize);
+  };
+
+  for (auto bin = 0; bin < spectrumBinCount; ++bin)
+  {
+    const auto lowT = spectrumBinCount <= 1
+                          ? 0.0f
+                          : juce::jlimit(0.0f, 1.0f, (static_cast<float>(bin) - 0.5f) /
+                                                             static_cast<float>(spectrumBinCount - 1));
+    const auto highT = spectrumBinCount <= 1
+                           ? 1.0f
+                           : juce::jlimit(0.0f, 1.0f, (static_cast<float>(bin) + 0.5f) /
+                                                              static_cast<float>(spectrumBinCount - 1));
+    const auto lowFrequency = juce::jlimit(20.0f, maxSpectrumFrequency, 20.0f * std::pow(1000.0f, lowT));
+    const auto highFrequency = juce::jlimit(lowFrequency, maxSpectrumFrequency, 20.0f * std::pow(1000.0f, highT));
+    const auto firstFftBin = juce::jlimit(1, maxFftBin, static_cast<int>(std::floor(frequencyToBin(lowFrequency))));
+    const auto lastFftBin = juce::jlimit(firstFftBin, maxFftBin, static_cast<int>(std::ceil(frequencyToBin(highFrequency))));
+
+    auto magnitudeSumSquares = 0.0f;
+    auto peakMagnitude = 0.0f;
+    auto count = 0;
+
+    for (auto fftBin = firstFftBin; fftBin <= lastFftBin; ++fftBin)
+    {
+      const auto magnitude = fftFrame[static_cast<size_t>(fftBin)] * 2.0f / juce::jmax(1.0f, windowSum);
+      magnitudeSumSquares += magnitude * magnitude;
+      peakMagnitude = juce::jmax(peakMagnitude, magnitude);
+      ++count;
+    }
+
+    const auto centerFrequency = std::sqrt(lowFrequency * highFrequency);
+    const auto rmsMagnitude = count > 0 ? std::sqrt(magnitudeSumSquares / static_cast<float>(count)) : 0.0f;
+    const auto magnitude = juce::jmax(rmsMagnitude, peakMagnitude * 0.50f);
+    const auto db = juce::Decibels::gainToDecibels(magnitude, -120.0f);
+    const auto tiltDb = 4.5f * std::log2(juce::jmax(20.0f, centerFrequency) / 1000.0f);
+    constexpr auto analyzerFloorDb = -78.0f;
+    constexpr auto analyzerCeilingDb = -18.0f;
+    const auto normalized = juce::jlimit(0.0f, 1.0f, (db + tiltDb - analyzerFloorDb) /
+                                                            (analyzerCeilingDb - analyzerFloorDb));
+    auto& smoothed = analyzer.smoothed[static_cast<size_t>(bin)];
+    const auto coeff = normalized > smoothed ? attackCoeff : releaseCoeff;
+    smoothed = normalized + coeff * (smoothed - normalized);
+    analyzer.bins[static_cast<size_t>(bin)].store(juce::jlimit(0.0f, 1.0f, smoothed));
+  }
+}
+
+void VoxanovaAudioProcessor::resetWaveformAccumulators()
+{
+  inputWaveformPeak = 0.0f;
+  peakWaveformPeak = 0.0f;
+  peakOutputWaveformPeak = 0.0f;
+  glueWaveformPeak = 0.0f;
+  glueOutputWaveformPeak = 0.0f;
+  faceWaveformPeak = 0.0f;
+  faceOutputWaveformPeak = 0.0f;
+  gateWaveformPeak = 0.0f;
+  gateOutputWaveformPeak = 0.0f;
+}
+
+void VoxanovaAudioProcessor::clearWaveformBuffers()
+{
+  waveformWriteIndex.store(0);
+  waveformDownsampleCounter = 0;
+  clearWaveform(inputWaveform);
+  clearWaveform(peakWaveform);
+  clearWaveform(peakOutputWaveform);
+  clearWaveform(glueWaveform);
+  clearWaveform(glueOutputWaveform);
+  clearWaveform(faceWaveform);
+  clearWaveform(faceOutputWaveform);
+  clearWaveform(gateWaveform);
+  clearWaveform(gateOutputWaveform);
+  resetWaveformAccumulators();
+}
+
+void VoxanovaAudioProcessor::clearVisualState(bool resetSpectrum)
+{
+  clearMeters();
+  clearWaveformBuffers();
+  if (resetSpectrum)
+  {
+    clearSpectrumAnalyzer(preCompSpectrumAnalyzer);
+    clearSpectrumAnalyzer(postCompSpectrumAnalyzer);
+  }
+  visualSilenceActive.store(true);
+}
+
 void VoxanovaAudioProcessor::clearMeters()
 {
   for (auto i = 0; i < 2; ++i)
@@ -1605,6 +2433,16 @@ void VoxanovaAudioProcessor::clearMeters()
   peakReductionDbMeter.store(0.0f);
   glueReductionDbMeter.store(0.0f);
   faceReductionDbMeter.store(0.0f);
+
+  for (auto& meter : glueBandReductionMeters)
+    meter.store(0.0f);
+  for (auto& meter : glueBandReductionDbMeters)
+    meter.store(0.0f);
+
+  tuneFrequencyMeter.store(0.0f);
+  tuneCentsMeter.store(0.0f);
+  tuneConfidenceMeter.store(0.0f);
+  tuneTargetMidiMeter.store(0.0f);
 }
 
 float VoxanovaAudioProcessor::processOnePoleLowpass(float input, float cutoffHz, float& state) const
@@ -1613,6 +2451,591 @@ float VoxanovaAudioProcessor::processOnePoleLowpass(float input, float cutoffHz,
       1.0f - std::exp(-2.0f * juce::MathConstants<float>::pi * cutoffHz / static_cast<float>(currentSampleRate));
   state += alpha * (input - state);
   return state;
+}
+
+bool VoxanovaAudioProcessor::eqBandHasEffect(const EqBandSettings& settings)
+{
+  if (!settings.enabled)
+    return false;
+
+  if (settings.solo)
+    return true;
+
+  switch (settings.type)
+  {
+    case 2: // Desser
+      return false;
+    case 3: // Low Cut
+    case 4: // High Cut
+    case 7: // Notch
+    case 8: // Band Pass
+      return true;
+    default:
+      return std::abs(settings.gainDb) > 0.01f || eqBandHasCompression(settings);
+  }
+}
+
+bool VoxanovaAudioProcessor::eqBandSupportsCompression(const EqBandSettings& settings)
+{
+  switch (settings.type)
+  {
+    case 0: // Bell
+    case 1: // Surfer Bell
+    case 5: // Low Shelf
+    case 6: // High Shelf
+    case 8: // Band Pass
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool VoxanovaAudioProcessor::eqBandHasCompression(const EqBandSettings& settings)
+{
+  return settings.enabled && eqBandSupportsCompression(settings) && settings.compEnabled &&
+         std::abs(settings.compDb - settings.gainDb) > 0.05f;
+}
+
+bool VoxanovaAudioProcessor::eqBandsNeedPitchTracking(const std::vector<EqBandSettings>& settings)
+{
+  return std::any_of(settings.begin(), settings.end(), [](const auto& band) {
+    return band.enabled && band.type == 1;
+  });
+}
+
+int VoxanovaAudioProcessor::eqFilterStageCount(int slopeDb)
+{
+  if (slopeDb >= eqWallSlopeDb)
+    return eqMaxFilterStages;
+
+  return juce::jlimit(1, eqMaxFilterStages, juce::roundToInt(static_cast<float>(slopeDb) / 12.0f));
+}
+
+void VoxanovaAudioProcessor::setBiquadCoefficients(EqFilterStage& stage, float b0, float b1, float b2, float a0,
+                                                   float a1, float a2)
+{
+  if (std::abs(a0) <= 0.000001f || !std::isfinite(a0))
+  {
+    stage.setBypass();
+    return;
+  }
+
+  stage.setCoefficients(b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0);
+}
+
+void VoxanovaAudioProcessor::setPeakingFilter(EqFilterStage& stage, float frequency, float q, float gainDb) const
+{
+  const auto safeRate = juce::jmax(1000.0f, static_cast<float>(currentSampleRate));
+  const auto freq = juce::jlimit(20.0f, safeRate * 0.45f, frequency);
+  const auto safeQ = juce::jlimit(0.1f, 50.0f, q);
+  const auto omega = 2.0f * juce::MathConstants<float>::pi * freq / safeRate;
+  const auto sinOmega = std::sin(omega);
+  const auto cosOmega = std::cos(omega);
+  const auto alpha = sinOmega / (2.0f * safeQ);
+  const auto a = std::pow(10.0f, gainDb / 40.0f);
+
+  setBiquadCoefficients(stage,
+                        1.0f + alpha * a,
+                        -2.0f * cosOmega,
+                        1.0f - alpha * a,
+                        1.0f + alpha / a,
+                        -2.0f * cosOmega,
+                        1.0f - alpha / a);
+}
+
+void VoxanovaAudioProcessor::setLowShelfFilter(EqFilterStage& stage, float frequency, float q, float gainDb) const
+{
+  const auto safeRate = juce::jmax(1000.0f, static_cast<float>(currentSampleRate));
+  const auto freq = juce::jlimit(20.0f, safeRate * 0.45f, frequency);
+  const auto slope = juce::jlimit(0.1f, 2.0f, q);
+  const auto omega = 2.0f * juce::MathConstants<float>::pi * freq / safeRate;
+  const auto sinOmega = std::sin(omega);
+  const auto cosOmega = std::cos(omega);
+  const auto a = std::pow(10.0f, gainDb / 40.0f);
+  const auto twoSqrtAAlpha =
+      2.0f * std::sqrt(a) * sinOmega * 0.5f *
+      std::sqrt(juce::jmax(0.0f, (a + 1.0f / a) * (1.0f / slope - 1.0f) + 2.0f));
+
+  setBiquadCoefficients(stage,
+                        a * ((a + 1.0f) - (a - 1.0f) * cosOmega + twoSqrtAAlpha),
+                        2.0f * a * ((a - 1.0f) - (a + 1.0f) * cosOmega),
+                        a * ((a + 1.0f) - (a - 1.0f) * cosOmega - twoSqrtAAlpha),
+                        (a + 1.0f) + (a - 1.0f) * cosOmega + twoSqrtAAlpha,
+                        -2.0f * ((a - 1.0f) + (a + 1.0f) * cosOmega),
+                        (a + 1.0f) + (a - 1.0f) * cosOmega - twoSqrtAAlpha);
+}
+
+void VoxanovaAudioProcessor::setHighShelfFilter(EqFilterStage& stage, float frequency, float q, float gainDb) const
+{
+  const auto safeRate = juce::jmax(1000.0f, static_cast<float>(currentSampleRate));
+  const auto freq = juce::jlimit(20.0f, safeRate * 0.45f, frequency);
+  const auto slope = juce::jlimit(0.1f, 2.0f, q);
+  const auto omega = 2.0f * juce::MathConstants<float>::pi * freq / safeRate;
+  const auto sinOmega = std::sin(omega);
+  const auto cosOmega = std::cos(omega);
+  const auto a = std::pow(10.0f, gainDb / 40.0f);
+  const auto twoSqrtAAlpha =
+      2.0f * std::sqrt(a) * sinOmega * 0.5f *
+      std::sqrt(juce::jmax(0.0f, (a + 1.0f / a) * (1.0f / slope - 1.0f) + 2.0f));
+
+  setBiquadCoefficients(stage,
+                        a * ((a + 1.0f) + (a - 1.0f) * cosOmega + twoSqrtAAlpha),
+                        -2.0f * a * ((a - 1.0f) + (a + 1.0f) * cosOmega),
+                        a * ((a + 1.0f) + (a - 1.0f) * cosOmega - twoSqrtAAlpha),
+                        (a + 1.0f) - (a - 1.0f) * cosOmega + twoSqrtAAlpha,
+                        2.0f * ((a - 1.0f) - (a + 1.0f) * cosOmega),
+                        (a + 1.0f) - (a - 1.0f) * cosOmega - twoSqrtAAlpha);
+}
+
+void VoxanovaAudioProcessor::setLowPassFilter(EqFilterStage& stage, float frequency, float q) const
+{
+  const auto safeRate = juce::jmax(1000.0f, static_cast<float>(currentSampleRate));
+  const auto freq = juce::jlimit(20.0f, safeRate * 0.45f, frequency);
+  const auto safeQ = juce::jlimit(0.25f, 4.0f, q);
+  const auto omega = 2.0f * juce::MathConstants<float>::pi * freq / safeRate;
+  const auto sinOmega = std::sin(omega);
+  const auto cosOmega = std::cos(omega);
+  const auto alpha = sinOmega / (2.0f * safeQ);
+
+  setBiquadCoefficients(stage,
+                        (1.0f - cosOmega) * 0.5f,
+                        1.0f - cosOmega,
+                        (1.0f - cosOmega) * 0.5f,
+                        1.0f + alpha,
+                        -2.0f * cosOmega,
+                        1.0f - alpha);
+}
+
+void VoxanovaAudioProcessor::setHighPassFilter(EqFilterStage& stage, float frequency, float q) const
+{
+  const auto safeRate = juce::jmax(1000.0f, static_cast<float>(currentSampleRate));
+  const auto freq = juce::jlimit(20.0f, safeRate * 0.45f, frequency);
+  const auto safeQ = juce::jlimit(0.25f, 4.0f, q);
+  const auto omega = 2.0f * juce::MathConstants<float>::pi * freq / safeRate;
+  const auto sinOmega = std::sin(omega);
+  const auto cosOmega = std::cos(omega);
+  const auto alpha = sinOmega / (2.0f * safeQ);
+
+  setBiquadCoefficients(stage,
+                        (1.0f + cosOmega) * 0.5f,
+                        -(1.0f + cosOmega),
+                        (1.0f + cosOmega) * 0.5f,
+                        1.0f + alpha,
+                        -2.0f * cosOmega,
+                        1.0f - alpha);
+}
+
+void VoxanovaAudioProcessor::setNotchFilter(EqFilterStage& stage, float frequency, float q) const
+{
+  const auto safeRate = juce::jmax(1000.0f, static_cast<float>(currentSampleRate));
+  const auto freq = juce::jlimit(20.0f, safeRate * 0.45f, frequency);
+  const auto safeQ = juce::jlimit(0.1f, 50.0f, q);
+  const auto omega = 2.0f * juce::MathConstants<float>::pi * freq / safeRate;
+  const auto sinOmega = std::sin(omega);
+  const auto cosOmega = std::cos(omega);
+  const auto alpha = sinOmega / (2.0f * safeQ);
+
+  setBiquadCoefficients(stage, 1.0f, -2.0f * cosOmega, 1.0f, 1.0f + alpha, -2.0f * cosOmega, 1.0f - alpha);
+}
+
+void VoxanovaAudioProcessor::setBandPassFilter(EqFilterStage& stage, float frequency, float q, float gainDb) const
+{
+  const auto safeRate = juce::jmax(1000.0f, static_cast<float>(currentSampleRate));
+  const auto freq = juce::jlimit(20.0f, safeRate * 0.45f, frequency);
+  const auto safeQ = juce::jlimit(0.1f, 50.0f, q);
+  const auto omega = 2.0f * juce::MathConstants<float>::pi * freq / safeRate;
+  const auto sinOmega = std::sin(omega);
+  const auto cosOmega = std::cos(omega);
+  const auto alpha = sinOmega / (2.0f * safeQ);
+  const auto gain = dbToGain(gainDb);
+
+  setBiquadCoefficients(stage, alpha * gain, 0.0f, -alpha * gain, 1.0f + alpha, -2.0f * cosOmega, 1.0f - alpha);
+}
+
+float VoxanovaAudioProcessor::getSurferEqFrequency(EqBandState& state, const EqBandSettings& settings) const
+{
+  auto targetFrequency = juce::jlimit(20.0f, static_cast<float>(currentSampleRate) * 0.45f, settings.frequency);
+  const auto detectedFrequency = tuneEngine.getDetectedFrequency();
+  const auto detectorReady = detectedFrequency >= 55.0f && tuneEngine.getDetectedClarity() >= 0.58f;
+
+  if (detectorReady)
+  {
+    const auto explicitRatio = settings.surfRatio > 0.0001f;
+    const auto staticFrequencyChanged = std::abs(settings.frequency - state.previousStaticFrequency) > 0.5f;
+
+    if (explicitRatio)
+    {
+      state.surferRatio = settings.surfRatio;
+      state.hasSurferRatio = true;
+    }
+    else if (!state.hasSurferRatio || staticFrequencyChanged)
+    {
+      state.surferRatio = juce::jlimit(0.125f, 128.0f, settings.frequency / detectedFrequency);
+      state.hasSurferRatio = true;
+    }
+
+    if (state.hasSurferRatio)
+      targetFrequency =
+          juce::jlimit(20.0f, static_cast<float>(currentSampleRate) * 0.45f,
+                       detectedFrequency * state.surferRatio);
+  }
+
+  state.previousStaticFrequency = settings.frequency;
+
+  if (!state.hasSurferFrequency)
+  {
+    state.surferFrequency = targetFrequency;
+    state.hasSurferFrequency = true;
+  }
+  else
+  {
+    state.surferFrequency = targetFrequency + 0.68f * (state.surferFrequency - targetFrequency);
+  }
+
+  return state.surferFrequency;
+}
+
+void VoxanovaAudioProcessor::configureEqBandForGain(EqBandState& state, const EqBandSettings& settings,
+                                                    float gainDb) const
+{
+  const auto stageCount = (settings.type == 3 || settings.type == 4) ? eqFilterStageCount(settings.slopeDb) : 1;
+  const auto bandFrequency =
+      settings.type == 1 && state.hasSurferFrequency ? state.surferFrequency : settings.frequency;
+  const auto safeGainDb = juce::jlimit(-30.0f, 30.0f, gainDb);
+
+  for (auto& channelStages : state.filters)
+  {
+    for (auto& stage : channelStages)
+      stage.setBypass();
+
+    switch (settings.type)
+    {
+      case 1: // Surfer Bell
+        setPeakingFilter(channelStages[0], bandFrequency, juce::jlimit(0.1f, 50.0f, settings.q * 0.58f),
+                         safeGainDb);
+        break;
+      case 3: // Low Cut
+        for (auto stage = 0; stage < stageCount; ++stage)
+          setHighPassFilter(channelStages[static_cast<size_t>(stage)], bandFrequency, 0.7071f);
+        break;
+      case 4: // High Cut
+        for (auto stage = 0; stage < stageCount; ++stage)
+          setLowPassFilter(channelStages[static_cast<size_t>(stage)], bandFrequency, 0.7071f);
+        break;
+      case 5: // Low Shelf
+        setLowShelfFilter(channelStages[0], bandFrequency, settings.q, safeGainDb);
+        break;
+      case 6: // High Shelf
+        setHighShelfFilter(channelStages[0], bandFrequency, settings.q, safeGainDb);
+        break;
+      case 7: // Notch
+        setNotchFilter(channelStages[0], bandFrequency, settings.q);
+        break;
+      case 8: // Band Pass
+        setBandPassFilter(channelStages[0], bandFrequency, settings.q, safeGainDb);
+        break;
+      case 2: // Desser
+        break;
+      case 0: // Bell
+      default:
+        setPeakingFilter(channelStages[0], bandFrequency, settings.q, safeGainDb);
+        break;
+    }
+  }
+}
+
+void VoxanovaAudioProcessor::configureEqBandSolo(EqBandState& state, const EqBandSettings& settings) const
+{
+  const auto bandFrequency =
+      settings.type == 1 && state.hasSurferFrequency ? state.surferFrequency : settings.frequency;
+
+  for (auto& channelStages : state.soloFilters)
+  {
+    for (auto& stage : channelStages)
+      stage.setBypass();
+
+    if (!settings.enabled || !settings.solo)
+      continue;
+
+    switch (settings.type)
+    {
+      case 3: // Low Cut
+      case 5: // Low Shelf
+        setLowPassFilter(channelStages[0], bandFrequency, 0.7071f);
+        break;
+      case 4: // High Cut
+      case 6: // High Shelf
+        setHighPassFilter(channelStages[0], bandFrequency, 0.7071f);
+        break;
+      case 1: // Surfer Bell
+        setBandPassFilter(channelStages[0], bandFrequency, juce::jlimit(0.1f, 50.0f, settings.q * 0.58f), 0.0f);
+        break;
+      case 0: // Bell
+      case 7: // Notch
+      case 8: // Band Pass
+      default:
+        setBandPassFilter(channelStages[0], bandFrequency, settings.q, 0.0f);
+        break;
+    }
+  }
+}
+
+void VoxanovaAudioProcessor::configureEqBandCompressionDetector(EqBandState& state,
+                                                                const EqBandSettings& settings) const
+{
+  for (auto& detector : state.compDetectorFilters)
+    detector.setBypass();
+
+  if (!eqBandHasCompression(settings))
+    return;
+
+  const auto bandFrequency =
+      settings.type == 1 && state.hasSurferFrequency ? state.surferFrequency : settings.frequency;
+  const auto detectorQ = settings.type == 1 ? juce::jlimit(0.1f, 50.0f, settings.q * 0.58f)
+                                            : juce::jlimit(0.1f, 50.0f, settings.q);
+
+  for (auto& detector : state.compDetectorFilters)
+  {
+    switch (settings.type)
+    {
+      case 5: // Low Shelf
+        setLowPassFilter(detector, bandFrequency, 0.7071f);
+        break;
+      case 6: // High Shelf
+        setHighPassFilter(detector, bandFrequency, 0.7071f);
+        break;
+      case 0: // Bell
+      case 1: // Surfer Bell
+      case 8: // Band Pass
+      default:
+        setBandPassFilter(detector, bandFrequency, detectorQ, 0.0f);
+        break;
+    }
+  }
+}
+
+void VoxanovaAudioProcessor::configureEqBand(EqBandState& state, const EqBandSettings& settings) const
+{
+  const auto active = eqBandHasEffect(settings);
+  const auto stageCount = (settings.type == 3 || settings.type == 4) ? eqFilterStageCount(settings.slopeDb) : 1;
+
+  if (!active)
+  {
+    if (state.wasActive)
+      state.reset();
+    return;
+  }
+
+  const auto resetState = !state.wasActive || state.previousType != settings.type || state.previousStageCount != stageCount;
+  if (resetState)
+    state.reset();
+
+  state.wasActive = true;
+  state.previousType = settings.type;
+  state.previousStageCount = stageCount;
+
+  if (settings.type == 1)
+    getSurferEqFrequency(state, settings);
+
+  if (!state.compGainInitialized || !eqBandHasCompression(settings))
+  {
+    state.compGainDb = settings.gainDb;
+    state.compGainInitialized = true;
+  }
+
+  configureEqBandCompressionDetector(state, settings);
+  configureEqBandForGain(state, settings, settings.gainDb);
+  configureEqBandSolo(state, settings);
+}
+
+void VoxanovaAudioProcessor::prepareEq(std::vector<EqBandState>& states,
+                                       const std::vector<EqBandSettings>& settings) const
+{
+  if (states.size() < settings.size())
+  {
+    const auto oldSize = states.size();
+    states.resize(settings.size());
+    for (auto index = oldSize; index < states.size(); ++index)
+      states[index].reset();
+  }
+
+  for (auto index = 0u; index < settings.size(); ++index)
+    configureEqBand(states[index], settings[index]);
+
+  for (auto index = settings.size(); index < states.size(); ++index)
+    if (states[index].wasActive)
+      states[index].reset();
+}
+
+float VoxanovaAudioProcessor::updateEqBandDynamicGain(EqBandState& state, const EqBandSettings& settings, float left,
+                                                      float right) const
+{
+  if (!eqBandHasCompression(settings))
+    return settings.gainDb;
+
+  if (!state.compGainInitialized)
+  {
+    state.compGainDb = settings.gainDb;
+    state.compGainInitialized = true;
+  }
+
+  const auto detectorLeft = state.compDetectorFilters[0].process(left);
+  const auto detectorRight = state.compDetectorFilters[1].process(right);
+  const auto peakDetector = juce::jmax(std::abs(detectorLeft), std::abs(detectorRight));
+  const auto rmsDetector = std::sqrt((detectorLeft * detectorLeft + detectorRight * detectorRight) * 0.5f);
+  const auto detector = peakDetector * 0.58f + rmsDetector * 0.42f;
+  const auto safeRate = juce::jmax(1000.0f, static_cast<float>(currentSampleRate));
+  const auto detectorAttackMs = juce::jlimit(0.1f, 200.0f, settings.compAttackMs * 0.72f);
+  const auto detectorReleaseMs = juce::jlimit(5.0f, 1000.0f, settings.compReleaseMs);
+  const auto detectorCoeff =
+      detector > state.compEnvelope
+          ? std::exp(-1.0f / (safeRate * (detectorAttackMs / 1000.0f)))
+          : std::exp(-1.0f / (safeRate * (detectorReleaseMs / 1000.0f)));
+  state.compEnvelope = detector + detectorCoeff * (state.compEnvelope - detector);
+
+  const auto detectorDb = state.compEnvelope > 0.000001f ? juce::Decibels::gainToDecibels(state.compEnvelope)
+                                                         : -120.0f;
+  const auto overDb = juce::jmax(0.0f, detectorDb - settings.compThresholdDb);
+  const auto kneeEngagement = thresholdEngagement(detectorDb, settings.compThresholdDb, 6.0f);
+  const auto dynamicRangeDb = std::abs(settings.compDb - settings.gainDb);
+  const auto ratio = juce::jlimit(1.0f, 20.0f, settings.compRatio);
+  const auto ratioMoveDb = overDb * (1.0f - 1.0f / ratio);
+  const auto ratioEngagement = dynamicRangeDb > 0.001f
+                                   ? juce::jlimit(0.0f, 1.0f, ratioMoveDb / dynamicRangeDb)
+                                   : 0.0f;
+  const auto engagement = juce::jlimit(0.0f, 1.0f, kneeEngagement * ratioEngagement);
+  const auto targetGainDb = juce::jlimit(-30.0f, 30.0f,
+                                         settings.gainDb + (settings.compDb - settings.gainDb) * engagement);
+  const auto currentDepth = std::abs(state.compGainDb - settings.gainDb);
+  const auto targetDepth = std::abs(targetGainDb - settings.gainDb);
+  const auto gainTimeMs = targetDepth > currentDepth ? settings.compAttackMs : settings.compReleaseMs;
+  const auto gainCoeff = std::exp(-1.0f / (safeRate * (juce::jmax(0.1f, gainTimeMs) / 1000.0f)));
+  state.compGainDb = targetGainDb + gainCoeff * (state.compGainDb - targetGainDb);
+
+  return juce::jlimit(-30.0f, 30.0f, state.compGainDb);
+}
+
+void VoxanovaAudioProcessor::applyEq(std::vector<EqBandState>& states, const std::vector<EqBandSettings>& settings,
+                                     float& left, float& right)
+{
+  const auto count = juce::jmin(states.size(), settings.size());
+  const auto hasSolo = std::any_of(settings.begin(), settings.begin() + static_cast<std::ptrdiff_t>(count),
+                                   [](const auto& band) { return band.enabled && band.solo; });
+
+  if (hasSolo)
+  {
+    const auto sourceLeft = left;
+    const auto sourceRight = right;
+    auto soloLeft = 0.0f;
+    auto soloRight = 0.0f;
+
+    for (auto index = 0u; index < count; ++index)
+    {
+      const auto& band = settings[index];
+      if (!band.enabled || !band.solo)
+        continue;
+
+      auto& state = states[index];
+      auto bandLeft = sourceLeft;
+      auto bandRight = sourceRight;
+
+      if (eqBandHasCompression(band))
+        configureEqBandForGain(state, band, updateEqBandDynamicGain(state, band, sourceLeft, sourceRight));
+
+      const auto eqStageCount = (band.type == 3 || band.type == 4) ? eqFilterStageCount(band.slopeDb) : 1;
+      for (auto stage = 0; stage < eqStageCount; ++stage)
+      {
+        bandLeft = state.filters[0][static_cast<size_t>(stage)].process(bandLeft);
+        bandRight = state.filters[1][static_cast<size_t>(stage)].process(bandRight);
+      }
+
+      for (auto stage = 0; stage < 2; ++stage)
+      {
+        bandLeft = state.soloFilters[0][static_cast<size_t>(stage)].process(bandLeft);
+        bandRight = state.soloFilters[1][static_cast<size_t>(stage)].process(bandRight);
+      }
+
+      soloLeft += bandLeft;
+      soloRight += bandRight;
+    }
+
+    left = juce::jlimit(-4.0f, 4.0f, soloLeft);
+    right = juce::jlimit(-4.0f, 4.0f, soloRight);
+    return;
+  }
+
+  for (auto index = 0u; index < count; ++index)
+  {
+    const auto& band = settings[index];
+    if (!eqBandHasEffect(band))
+      continue;
+
+    auto& state = states[index];
+    if (band.type == 2)
+      continue;
+
+    if (eqBandHasCompression(band))
+      configureEqBandForGain(state, band, updateEqBandDynamicGain(state, band, left, right));
+
+    const auto stageCount = (band.type == 3 || band.type == 4) ? eqFilterStageCount(band.slopeDb) : 1;
+    for (auto stage = 0; stage < stageCount; ++stage)
+    {
+      left = state.filters[0][static_cast<size_t>(stage)].process(left);
+      right = state.filters[1][static_cast<size_t>(stage)].process(right);
+    }
+  }
+}
+
+void VoxanovaAudioProcessor::applyEqDeEsser(EqBandState& state, const EqBandSettings& settings, float& left,
+                                            float& right)
+{
+  const auto amount = juce::jlimit(0.0f, 1.0f, settings.intensity / 100.0f);
+  if (amount <= 0.0f)
+    return;
+
+  const auto splitHz =
+      juce::jlimit(1800.0f, static_cast<float>(currentSampleRate) * 0.42f,
+                   settings.frequency * (settings.deessMode == 1 ? 0.68f : 1.0f));
+  const auto detectorAttackMs = settings.deessMode == 1 ? 0.75f : 0.35f;
+  const auto detectorReleaseMs = settings.deessMode == 1 ? 72.0f : 42.0f;
+  const auto gainAttackMs = settings.deessMode == 1 ? 1.4f : 0.65f;
+  const auto gainReleaseMs = settings.deessMode == 1 ? 96.0f : 58.0f;
+
+  const auto lowLeft = processOnePoleLowpass(left, splitHz, state.deEsserLowStates[0]);
+  const auto lowRight = processOnePoleLowpass(right, splitHz, state.deEsserLowStates[1]);
+  const auto highLeft = left - lowLeft;
+  const auto highRight = right - lowRight;
+  const auto peakDetector = juce::jmax(std::abs(highLeft), std::abs(highRight));
+  const auto rmsDetector = std::sqrt((highLeft * highLeft + highRight * highRight) * 0.5f);
+  const auto detector = peakDetector * 0.62f + rmsDetector * 0.38f;
+
+  const auto detectorCoeff =
+      detector > state.deEsserEnvelope
+          ? std::exp(-1.0f / static_cast<float>(currentSampleRate * (detectorAttackMs / 1000.0f)))
+          : std::exp(-1.0f / static_cast<float>(currentSampleRate * (detectorReleaseMs / 1000.0f)));
+  state.deEsserEnvelope = detector + detectorCoeff * (state.deEsserEnvelope - detector);
+
+  const auto detectorDb = state.deEsserEnvelope > 0.000001f
+                              ? juce::Decibels::gainToDecibels(state.deEsserEnvelope)
+                              : -120.0f;
+  const auto overDb = juce::jmax(0.0f, detectorDb - settings.thresholdDb);
+  const auto maxReductionDb = 1.5f + amount * (settings.deessMode == 1 ? 12.0f : 18.0f);
+  const auto targetReductionDb = juce::jlimit(0.0f, maxReductionDb, overDb * (0.32f + amount * 0.62f));
+  const auto targetGain = dbToGain(-targetReductionDb);
+  const auto gainCoeff =
+      targetGain < state.deEsserGain
+          ? std::exp(-1.0f / static_cast<float>(currentSampleRate * (gainAttackMs / 1000.0f)))
+          : std::exp(-1.0f / static_cast<float>(currentSampleRate * (gainReleaseMs / 1000.0f)));
+  state.deEsserGain = targetGain + gainCoeff * (state.deEsserGain - targetGain);
+
+  left = lowLeft + highLeft * state.deEsserGain;
+  right = lowRight + highRight * state.deEsserGain;
+}
+
+void VoxanovaAudioProcessor::resetEqStates(std::vector<EqBandState>& states)
+{
+  for (auto& state : states)
+    state.reset();
 }
 
 VoxanovaAudioProcessor::GateResult VoxanovaAudioProcessor::applyVocalGate(float left, float right, float detectorLeft,
@@ -1687,7 +3110,6 @@ VoxanovaAudioProcessor::GateResult VoxanovaAudioProcessor::applyVocalGate(float 
   result.reduction = reductionDb > 0.02f ? juce::jlimit(0.0f, 100.0f, reductionDb / maxReductionDb * 100.0f) : 0.0f;
   return result;
 }
-
 VoxanovaAudioProcessor::CompressorResult VoxanovaAudioProcessor::applyPeakTamer(float left, float right,
                                                                                 float thresholdDb,
                                                                                 CompressorState& state) const
@@ -2122,6 +3544,57 @@ VoxanovaAudioProcessor::CompressorResult VoxanovaAudioProcessor::applyCompressor
           ? juce::jlimit(0.0f, 100.0f, -juce::Decibels::gainToDecibels(state.gain) / 24.0f * 100.0f)
           : 0.0f;
   return result;
+}
+
+void VoxanovaAudioProcessor::applyDeEsser(float& left, float& right, float amountPercent, float lowHz, float highHz)
+{
+  const auto amount = juce::jlimit(0.0f, 1.0f, amountPercent / 100.0f);
+  if (amount <= 0.0f)
+    return;
+
+  const auto safeLowHz = juce::jlimit(1800.0f, static_cast<float>(currentSampleRate) * 0.38f, lowHz);
+  const auto safeHighHz = juce::jlimit(safeLowHz + 250.0f, static_cast<float>(currentSampleRate) * 0.46f, highHz);
+  constexpr auto detectorAttackMs = 0.22f;
+  constexpr auto detectorReleaseMs = 64.0f;
+  constexpr auto gainAttackMs = 0.38f;
+  constexpr auto gainReleaseMs = 86.0f;
+
+  const auto lowLeft = processOnePoleLowpass(left, safeLowHz, deEsserLowStates[0]);
+  const auto lowRight = processOnePoleLowpass(right, safeLowHz, deEsserLowStates[1]);
+  const auto highSplitLeft = processOnePoleLowpass(left, safeHighHz, deEsserHighStates[0]);
+  const auto highSplitRight = processOnePoleLowpass(right, safeHighHz, deEsserHighStates[1]);
+  const auto bandLeft = highSplitLeft - lowLeft;
+  const auto bandRight = highSplitRight - lowRight;
+  const auto peakDetector = juce::jmax(std::abs(bandLeft), std::abs(bandRight));
+  const auto rmsDetector = std::sqrt((bandLeft * bandLeft + bandRight * bandRight) * 0.5f);
+  const auto detector = peakDetector * 0.58f + rmsDetector * 0.42f;
+
+  const auto detectorCoeff =
+      detector > deEsserEnvelope
+          ? std::exp(-1.0f / static_cast<float>(currentSampleRate * (detectorAttackMs / 1000.0f)))
+          : std::exp(-1.0f / static_cast<float>(currentSampleRate * (detectorReleaseMs / 1000.0f)));
+  deEsserEnvelope = detector + detectorCoeff * (deEsserEnvelope - detector);
+
+  const auto amountCurve = std::pow(amount, 0.62f);
+  const auto detectorBoost = 2.8f + amountCurve * 7.2f;
+  const auto detectorDb =
+      deEsserEnvelope > 0.000001f ? juce::Decibels::gainToDecibels(deEsserEnvelope * detectorBoost) : -120.0f;
+  const auto thresholdDb = -30.0f - amountCurve * 38.0f;
+  const auto maxReductionDb = 10.0f + amountCurve * 50.0f;
+  const auto overDb = juce::jmax(0.0f, detectorDb - thresholdDb);
+  const auto targetReductionDb = juce::jlimit(0.0f, maxReductionDb, overDb * (0.82f + amountCurve * 2.25f));
+  const auto targetGain = dbToGain(-targetReductionDb);
+  const auto gainCoeff =
+      targetGain < deEsserGain
+          ? std::exp(-1.0f / static_cast<float>(currentSampleRate * (gainAttackMs / 1000.0f)))
+          : std::exp(-1.0f / static_cast<float>(currentSampleRate * (gainReleaseMs / 1000.0f)));
+  deEsserGain = targetGain + gainCoeff * (deEsserGain - targetGain);
+
+  const auto forcedReduction = amountCurve * amountCurve * 0.72f;
+  const auto dynamicReduction = (1.0f - deEsserGain) * (1.0f + amountCurve * 1.9f);
+  const auto reductionMix = juce::jlimit(0.0f, 1.18f, forcedReduction + dynamicReduction);
+  left -= bandLeft * reductionMix;
+  right -= bandRight * reductionMix;
 }
 
 float VoxanovaAudioProcessor::applySoftClip(float sample, float drive)

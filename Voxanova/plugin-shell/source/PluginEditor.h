@@ -2,6 +2,8 @@
 
 #include "PluginProcessor.h"
 
+#include <cstdint>
+
 #include <juce_gui_extra/juce_gui_extra.h>
 
 class VoxanovaAudioProcessorEditor final : public juce::AudioProcessorEditor,
@@ -27,4 +29,6 @@ private:
   VoxanovaAudioProcessor& audioProcessor;
   juce::WebBrowserComponent webView;
   bool parameterDrainPending = false;
+  std::uint64_t lastMeterProcessCounter = 0;
+  int staleMeterTicks = 0;
 };

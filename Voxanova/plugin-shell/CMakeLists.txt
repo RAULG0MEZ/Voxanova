@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(Voxanova VERSION 0.1.74)
+project(Voxanova VERSION 0.1.77)
 
 if(NOT DEFINED JUCE_DIR)
   message(FATAL_ERROR "Set JUCE_DIR to your local JUCE checkout before configuring this target.")
@@ -36,6 +36,8 @@ juce_add_binary_data(VoxanovaWebAssets
 
 target_sources(Voxanova
   PRIVATE
+    source/FatTuneEngine.cpp
+    source/FatTuneEngine.h
     source/PluginEditor.cpp
     source/PluginEditor.h
     source/PluginProcessor.cpp

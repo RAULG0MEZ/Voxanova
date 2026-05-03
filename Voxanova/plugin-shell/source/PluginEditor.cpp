@@ -8,8 +8,9 @@ namespace
 {
 constexpr int baseEditorWidth = 1360;
 constexpr int baseEditorHeight = 820;
-constexpr float minEditorScale = 0.6f;
-constexpr float maxEditorScale = 1.2f;
+constexpr float minEditorScale = 0.5f;
+constexpr float maxEditorScale = 2.0f;
+constexpr const char* webAssetVersion = "20260503-87";
 
 juce::WebBrowserComponent::Resource makeTextResource(const juce::String& text)
 {
@@ -22,6 +23,10 @@ juce::WebBrowserComponent::Resource makeTextResource(const juce::String& text)
 
 juce::String normaliseResourcePath(juce::String path)
 {
+  const auto queryOrHash = path.indexOfAnyOf("?#");
+  if (queryOrHash >= 0)
+    path = path.substring(0, queryOrHash);
+
   if (path == "/" || path.isEmpty())
     return "index.html";
 
@@ -132,18 +137,23 @@ VoxanovaAudioProcessorEditor::VoxanovaAudioProcessorEditor(VoxanovaAudioProcesso
                   .withEventListener("voxanovaSetEditorSize", [this](const juce::var& payload) {
                     setEditorSizeFromNativeEvent(payload);
                   })
+                  .withEventListener("voxanovaSetEqBands", [this](const juce::var& payload) {
+                    audioProcessor.setEqBandsFromVar(payload);
+                  })
                   .withResourceProvider([this](const juce::String& path) {
                     return provideResource(path);
                   }))
 {
-  setResizable(true, false);
   setResizeLimits(juce::roundToInt(baseEditorWidth * minEditorScale),
                   juce::roundToInt(baseEditorHeight * minEditorScale),
                   juce::roundToInt(baseEditorWidth * maxEditorScale),
                   juce::roundToInt(baseEditorHeight * maxEditorScale));
+  if (auto* editorConstrainer = getConstrainer())
+    editorConstrainer->setFixedAspectRatio(static_cast<double>(baseEditorWidth) / static_cast<double>(baseEditorHeight));
   setSize(baseEditorWidth, baseEditorHeight);
   addAndMakeVisible(webView);
-  webView.goToURL(juce::WebBrowserComponent::getResourceProviderRoot());
+  setResizable(true, true);
+  webView.goToURL(juce::WebBrowserComponent::getResourceProviderRoot() + "?v=" + webAssetVersion);
   startTimerHz(30);
 }
 
@@ -155,6 +165,14 @@ void VoxanovaAudioProcessorEditor::paint(juce::Graphics& g)
 void VoxanovaAudioProcessorEditor::resized()
 {
   webView.setBounds(getLocalBounds());
+
+  if (resizableCorner != nullptr)
+  {
+    constexpr int resizerSize = 18;
+    resizableCorner->setBounds(getWidth() - resizerSize, getHeight() - resizerSize, resizerSize, resizerSize);
+    resizableCorner->toFront(false);
+  }
+
   webView.evaluateJavascript(
       "requestAnimationFrame(() => { window.dispatchEvent(new Event('resize')); document.body.classList.add('is-render-refresh'); requestAnimationFrame(() => document.body.classList.remove('is-render-refresh')); });");
 }
@@ -164,27 +182,73 @@ void VoxanovaAudioProcessorEditor::timerCallback()
   drainQueuedParameterChanges();
 
   const auto snapshot = audioProcessor.getMeterSnapshot();
+  if (snapshot.processCounter == lastMeterProcessCounter)
+    ++staleMeterTicks;
+  else
+    staleMeterTicks = 0;
+  lastMeterProcessCounter = snapshot.processCounter;
+
+  const auto meterStale = staleMeterTicks >= 4;
+  const auto visualSilence = snapshot.visualSilence || meterStale;
   auto payload = juce::DynamicObject::Ptr(new juce::DynamicObject());
 
-  payload->setProperty("inputL", snapshot.input[0]);
-  payload->setProperty("inputR", snapshot.input[1]);
-  payload->setProperty("outputL", snapshot.output[0]);
-  payload->setProperty("outputR", snapshot.output[1]);
+  payload->setProperty("inputL", visualSilence ? 0.0f : snapshot.input[0]);
+  payload->setProperty("inputR", visualSilence ? 0.0f : snapshot.input[1]);
+  payload->setProperty("outputL", visualSilence ? 0.0f : snapshot.output[0]);
+  payload->setProperty("outputR", visualSilence ? 0.0f : snapshot.output[1]);
   payload->setProperty("inputChannels", snapshot.inputChannels);
   payload->setProperty("outputChannels", snapshot.outputChannels);
-  payload->setProperty("gateGr", snapshot.gateReduction);
-  payload->setProperty("peakGr", snapshot.peakReduction);
-  payload->setProperty("glueGr", snapshot.glueReduction);
-  payload->setProperty("faceGr", snapshot.faceReduction);
-  payload->setProperty("gateGrDb", snapshot.gateReductionDb);
-  payload->setProperty("peakGrDb", snapshot.peakReductionDb);
-  payload->setProperty("glueGrDb", snapshot.glueReductionDb);
-  payload->setProperty("faceGrDb", snapshot.faceReductionDb);
-  payload->setProperty("peakLevel", snapshot.peakLevel);
-  payload->setProperty("glueLevel", snapshot.glueLevel);
-  payload->setProperty("faceLevel", snapshot.faceLevel);
-  payload->setProperty("gateLevel", snapshot.gateLevel);
+  payload->setProperty("visualSilence", visualSilence);
+  payload->setProperty("meterStale", meterStale);
+  payload->setProperty("gateGr", visualSilence ? 0.0f : snapshot.gateReduction);
+  payload->setProperty("peakGr", visualSilence ? 0.0f : snapshot.peakReduction);
+  payload->setProperty("glueGr", visualSilence ? 0.0f : snapshot.glueReduction);
+  payload->setProperty("faceGr", visualSilence ? 0.0f : snapshot.faceReduction);
+  payload->setProperty("gateGrDb", visualSilence ? 0.0f : snapshot.gateReductionDb);
+  payload->setProperty("peakGrDb", visualSilence ? 0.0f : snapshot.peakReductionDb);
+  payload->setProperty("glueGrDb", visualSilence ? 0.0f : snapshot.glueReductionDb);
+  payload->setProperty("faceGrDb", visualSilence ? 0.0f : snapshot.faceReductionDb);
+  payload->setProperty("peakLevel", visualSilence ? 0.0f : snapshot.peakLevel);
+  payload->setProperty("glueLevel", visualSilence ? 0.0f : snapshot.glueLevel);
+  payload->setProperty("faceLevel", visualSilence ? 0.0f : snapshot.faceLevel);
+  payload->setProperty("gateLevel", visualSilence ? 0.0f : snapshot.gateLevel);
   payload->setProperty("hostBpm", snapshot.hostBpm);
+  payload->setProperty("tuneFrequency", visualSilence ? 0.0f : snapshot.tuneFrequency);
+  payload->setProperty("tuneCents", visualSilence ? 0.0f : snapshot.tuneCents);
+  payload->setProperty("tuneConfidence", visualSilence ? 0.0f : snapshot.tuneConfidence);
+  payload->setProperty("tuneTargetMidi", visualSilence ? 0.0f : snapshot.tuneTargetMidi);
+  auto makeWaveformPayload = [](const auto& samples) {
+    juce::Array<juce::var> waveform;
+    waveform.ensureStorageAllocated(static_cast<int>(samples.size()));
+    for (const auto sample : samples)
+      waveform.add(sample);
+    return juce::var(waveform);
+  };
+
+  payload->setProperty("inputWaveform", makeWaveformPayload(snapshot.inputWaveform));
+  payload->setProperty("peakWaveform", makeWaveformPayload(snapshot.peakWaveform));
+  payload->setProperty("peakOutputWaveform", makeWaveformPayload(snapshot.peakOutputWaveform));
+  payload->setProperty("glueWaveform", makeWaveformPayload(snapshot.glueWaveform));
+  payload->setProperty("glueOutputWaveform", makeWaveformPayload(snapshot.glueOutputWaveform));
+  payload->setProperty("faceWaveform", makeWaveformPayload(snapshot.faceWaveform));
+  payload->setProperty("faceOutputWaveform", makeWaveformPayload(snapshot.faceOutputWaveform));
+  payload->setProperty("gateWaveform", makeWaveformPayload(snapshot.gateWaveform));
+  payload->setProperty("gateOutputWaveform", makeWaveformPayload(snapshot.gateOutputWaveform));
+  payload->setProperty("inputSpectrum", makeWaveformPayload(snapshot.preCompSpectrum));
+  payload->setProperty("preCompSpectrum", makeWaveformPayload(snapshot.preCompSpectrum));
+  payload->setProperty("postCompSpectrum", makeWaveformPayload(snapshot.postCompSpectrum));
+
+  juce::Array<juce::var> glueBandGr;
+  juce::Array<juce::var> glueBandGrDb;
+  glueBandGr.ensureStorageAllocated(static_cast<int>(snapshot.glueBandReductions.size()));
+  glueBandGrDb.ensureStorageAllocated(static_cast<int>(snapshot.glueBandReductionDbs.size()));
+  for (auto band = 0u; band < snapshot.glueBandReductions.size(); ++band)
+  {
+    glueBandGr.add(snapshot.glueBandReductions[band]);
+    glueBandGrDb.add(snapshot.glueBandReductionDbs[band]);
+  }
+  payload->setProperty("glueBandGr", juce::var(glueBandGr));
+  payload->setProperty("glueBandGrDb", juce::var(glueBandGrDb));
 
   if (auto* inputGain = audioProcessor.parameters.getRawParameterValue("inputGain"))
     payload->setProperty("inputGain", inputGain->load());
@@ -212,6 +276,24 @@ void VoxanovaAudioProcessorEditor::timerCallback()
 
   if (auto* postSaturationAmount = audioProcessor.parameters.getRawParameterValue("postSaturationAmount"))
     payload->setProperty("postSaturationAmount", postSaturationAmount->load());
+
+  if (auto* tuneEnabled = audioProcessor.parameters.getRawParameterValue("tuneEnabled"))
+    payload->setProperty("tuneEnabled", tuneEnabled->load());
+
+  if (auto* tuneAmount = audioProcessor.parameters.getRawParameterValue("tuneAmount"))
+    payload->setProperty("tuneAmount", tuneAmount->load());
+
+  if (auto* tuneKey = audioProcessor.parameters.getRawParameterValue("tuneKey"))
+    payload->setProperty("tuneKey", tuneKey->load());
+
+  if (auto* tuneScale = audioProcessor.parameters.getRawParameterValue("tuneScale"))
+    payload->setProperty("tuneScale", tuneScale->load());
+
+  if (auto* tuneCustomNotes = audioProcessor.parameters.getRawParameterValue("tuneCustomNotes"))
+    payload->setProperty("tuneCustomNotes", tuneCustomNotes->load());
+
+  if (auto* tunePitchShift = audioProcessor.parameters.getRawParameterValue("tunePitchShift"))
+    payload->setProperty("tunePitchShift", tunePitchShift->load());
 
   if (auto* peakEnabled = audioProcessor.parameters.getRawParameterValue("peakEnabled"))
     payload->setProperty("peakEnabled", peakEnabled->load());
@@ -248,6 +330,18 @@ void VoxanovaAudioProcessorEditor::timerCallback()
 
   if (auto* gateEnabled = audioProcessor.parameters.getRawParameterValue("gateEnabled"))
     payload->setProperty("gateEnabled", gateEnabled->load());
+
+  if (auto* deEsserEnabled = audioProcessor.parameters.getRawParameterValue("deEsserEnabled"))
+    payload->setProperty("deEsserEnabled", deEsserEnabled->load());
+
+  if (auto* deEsserAmount = audioProcessor.parameters.getRawParameterValue("deEsserAmount"))
+    payload->setProperty("deEsserAmount", deEsserAmount->load());
+
+  if (auto* deEsserLow = audioProcessor.parameters.getRawParameterValue("deEsserLow"))
+    payload->setProperty("deEsserLow", deEsserLow->load());
+
+  if (auto* deEsserHigh = audioProcessor.parameters.getRawParameterValue("deEsserHigh"))
+    payload->setProperty("deEsserHigh", deEsserHigh->load());
 
   if (auto* stereoEnabled = audioProcessor.parameters.getRawParameterValue("stereoEnabled"))
     payload->setProperty("stereoEnabled", stereoEnabled->load());
@@ -294,6 +388,9 @@ void VoxanovaAudioProcessorEditor::timerCallback()
   if (auto* reverbPredelayDivision = audioProcessor.parameters.getRawParameterValue("reverbPredelayDivision"))
     payload->setProperty("reverbPredelayDivision", reverbPredelayDivision->load());
 
+  if (auto* reverbAuxBus = audioProcessor.parameters.getRawParameterValue("reverbAuxBus"))
+    payload->setProperty("reverbAuxBus", reverbAuxBus->load());
+
   if (auto* delayEnabled = audioProcessor.parameters.getRawParameterValue("delayEnabled"))
     payload->setProperty("delayEnabled", delayEnabled->load());
 
@@ -329,6 +426,11 @@ void VoxanovaAudioProcessorEditor::timerCallback()
 
   if (auto* delayStyle = audioProcessor.parameters.getRawParameterValue("delayStyle"))
     payload->setProperty("delayStyle", delayStyle->load());
+
+  if (auto* delayAuxBus = audioProcessor.parameters.getRawParameterValue("delayAuxBus"))
+    payload->setProperty("delayAuxBus", delayAuxBus->load());
+
+  payload->setProperty("eqBands", audioProcessor.getEqBandsState());
 
   const auto json = juce::JSON::toString(juce::var(payload.get()), true);
   webView.evaluateJavascript("window.dispatchEvent(new CustomEvent('voxanovaMeterUpdate', { detail: " + json + " }));");
@@ -391,6 +493,18 @@ std::optional<juce::WebBrowserComponent::Resource> VoxanovaAudioProcessorEditor:
     {
       const auto didSet = setParameterFromRequest(id, valueText.getFloatValue());
       return makeTextResource(didSet ? R"({"ok":true})" : R"({"ok":false,"error":"parameter_not_found"})");
+    }
+
+    return makeTextResource(R"({"ok":false})");
+  }
+
+  if (isApiPath(path, "/api/setEqBands"))
+  {
+    const auto json = getQueryValue(path, "json");
+    if (json.isNotEmpty())
+    {
+      audioProcessor.setEqBandsFromVar(juce::JSON::parse(json));
+      return makeTextResource(R"({"ok":true})");
     }
 
     return makeTextResource(R"({"ok":false})");
