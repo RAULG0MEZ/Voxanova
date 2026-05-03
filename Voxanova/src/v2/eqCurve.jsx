@@ -11,9 +11,7 @@ const DEFAULT_EQ_LOW_CUT_SLOPE = 30;
 function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, setMode, showWaveform = true, scale = 12, scaleOpen, setScaleOpen, scaleOptions, setScale, scaleRef, saturation = { mode: 0, amount: 0 }, onSaturationChange, detectedFrequency = 0, spectrumData = [], detectorData = [], graphHeight = 320 }) {
   const W = 1296;
   const targetGraphHeight = Math.max(280, Math.min(430, Number(graphHeight) || 320));
-  const [displayGraphHeight, setDisplayGraphHeight] = React.useState(targetGraphHeight);
-  const displayGraphHeightRef = React.useRef(targetGraphHeight);
-  const H = displayGraphHeight;
+  const H = targetGraphHeight;
   const padL = 0, padR = 52, padT = 28, padB = 46;
   const innerW = W - padL - padR;
   const innerH = H - padT - padB;
@@ -69,32 +67,6 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
   React.useEffect(() => () => {
     if (dragCommitRef.current.raf) cancelAnimationFrame(dragCommitRef.current.raf);
   }, []);
-
-  React.useEffect(() => {
-    let raf = 0;
-    const from = displayGraphHeightRef.current;
-    const to = targetGraphHeight;
-    const startedAt = performance.now();
-    const duration = 220;
-
-    const tick = (now) => {
-      const t = Math.min(1, (now - startedAt) / duration);
-      const eased = 1 - Math.pow(1 - t, 3);
-      const nextHeight = from + (to - from) * eased;
-      displayGraphHeightRef.current = nextHeight;
-      setDisplayGraphHeight(nextHeight);
-      if (t < 1) raf = requestAnimationFrame(tick);
-    };
-
-    if (Math.abs(from - to) < 0.5) {
-      displayGraphHeightRef.current = to;
-      setDisplayGraphHeight(to);
-      return undefined;
-    }
-
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [targetGraphHeight]);
 
   React.useEffect(() => {
     latestPointsRef.current = points;
@@ -1290,6 +1262,18 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
     if (!activeBandCompPanelVisible) return;
     applyPointPatch(activeIdx, { compEnabled: !activeBand.compEnabled }, { resort: false, updateRange: false });
   };
+  const toggleActiveMute = () => {
+    if (activeIdx === null || activeIdx === undefined) return;
+    const currentPoints = latestPointsRef.current.length ? latestPointsRef.current : points;
+    if (!currentPoints[activeIdx]) return;
+
+    const current = withBandDefaults(currentPoints[activeIdx]);
+    const nextOn = current.on === false;
+    applyPointPatch(activeIdx, {
+      on: nextOn,
+      solo: nextOn ? current.solo : false
+    }, { resort: false, updateRange: true });
+  };
   const toggleActiveSolo = () => {
     if (activeIdx === null || activeIdx === undefined) return;
     const currentPoints = latestPointsRef.current.length ? latestPointsRef.current : points;
@@ -1421,14 +1405,16 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
 
             const color = bandColor(points, i);
             const isActive = activeIdx === i;
+            const isMuted = band.on === false;
+            const fillColor = isMuted ? 'var(--ink-4)' : color;
             const x = freqToX(band.freq);
             const y = gainToY(nodeGainAt(band));
 
             return (
               <linearGradient key={`band-fill-${i}`} id={bandFillId(i)} gradientUnits="userSpaceOnUse" x1={x} x2={x} y1={y} y2={baseY}>
-                <stop offset="0%" stopColor={color} stopOpacity={isActive ? 0.255 : 0.145} />
-                <stop offset="52%" stopColor={color} stopOpacity={isActive ? 0.095 : 0.052} />
-                <stop offset="100%" stopColor={color} stopOpacity={isActive ? 0.018 : 0.010} />
+                <stop offset="0%" stopColor={fillColor} stopOpacity={isMuted ? (isActive ? 0.09 : 0.052) : isActive ? 0.255 : 0.145} />
+                <stop offset="52%" stopColor={fillColor} stopOpacity={isMuted ? (isActive ? 0.032 : 0.020) : isActive ? 0.095 : 0.052} />
+                <stop offset="100%" stopColor={fillColor} stopOpacity={isMuted ? 0.006 : isActive ? 0.018 : 0.010} />
               </linearGradient>
             );
           })}
@@ -1583,6 +1569,8 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
             const color = bandColor(points, i);
             const isActive = activeIdx === i;
             const source = withBandDefaults(points[i] || p);
+            const isMuted = source.on === false;
+            const curveColor = isMuted ? 'var(--ink-4)' : color;
             const detectorDb = detectorDbAt(i);
             const isDynamic = bandHasDynamics(source) && getBandDynamicEngagement(source, withBandDefaults(p), detectorDb) > 0.003;
             return (
@@ -1598,11 +1586,11 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
                     onDoubleClick={(e) => { e.stopPropagation(); e.preventDefault(); }}
                   />
                 )}
-                <path d={line} fill="none" stroke={color}
+                <path d={line} fill="none" stroke={curveColor}
                       className="eq-band-line"
                       strokeWidth={isDynamic ? (isActive ? 1.65 : 1.15) : (isActive ? 1.1 : 0.8)}
                       strokeDasharray={isActive ? '0' : '2 3'}
-                      opacity={isDynamic ? (isActive ? 0.95 : 0.58) : (isActive ? 0.7 : 0.35)}
+                      opacity={isMuted ? (isActive ? 0.32 : 0.20) : isDynamic ? (isActive ? 0.95 : 0.58) : (isActive ? 0.7 : 0.35)}
                       pointerEvents="visibleStroke"
                       style={{ cursor: 'pointer' }}
                       onPointerDown={onBandSelectDown(i)}
@@ -1720,6 +1708,8 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
           const isActive = activeIdx === i;
           const isDragging = dragIdx === i;
           const color = bandColor(points, i);
+          const isMuted = sourceBand.on === false;
+          const nodeColor = isMuted ? 'var(--ink-4)' : color;
           const isSurfing = sourceBand.type === 'Surfer Bell' && Math.abs(visualBand.freq - sourceBand.freq) > 0.5;
           const isSurferBell = sourceBand.type === 'Surfer Bell';
           const editSurfAnchor = isSurferBell && isDragging;
@@ -1757,37 +1747,37 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
                 <g className="eq-surf-link">
                   <line x1={anchorX} y1={anchorY} x2={liveX} y2={liveY}
                         pointerEvents="none"
-                        stroke={color} strokeWidth="1.05" strokeDasharray="4 5" opacity={editSurfAnchor ? 0.46 : 0.34} />
+                        stroke={nodeColor} strokeWidth="1.05" strokeDasharray="4 5" opacity={isMuted ? 0.18 : editSurfAnchor ? 0.46 : 0.34} />
                   <circle cx={anchorX} cy={anchorY} r={editSurfAnchor ? 9.2 : 7.4}
                           pointerEvents="none"
-                          fill={color} opacity={editSurfAnchor ? 0.22 : 0.16} />
+                          fill={nodeColor} opacity={isMuted ? 0.10 : editSurfAnchor ? 0.22 : 0.16} />
                   <circle cx={anchorX} cy={anchorY} r={editSurfAnchor ? 5.8 : 5.1}
                           pointerEvents="none"
-                          fill="var(--panel)" stroke={color}
+                          fill="var(--panel)" stroke={nodeColor}
                           strokeWidth={editSurfAnchor ? 1.7 : 1.45}
-                          strokeDasharray="2.2 2.6" opacity="0.96"
-                          style={{ color, filter: 'drop-shadow(0 0 5px currentColor)' }} />
-                  <circle cx={anchorX} cy={anchorY} r="1.8" fill={color} opacity="0.95" pointerEvents="none" />
+                          strokeDasharray="2.2 2.6" opacity={isMuted ? 0.54 : 0.96}
+                          style={{ color: nodeColor, filter: 'drop-shadow(0 0 5px currentColor)' }} />
+                  <circle cx={anchorX} cy={anchorY} r="1.8" fill={nodeColor} opacity={isMuted ? 0.46 : 0.95} pointerEvents="none" />
                   <circle className="eq-surf-ghost-hit" cx={anchorX} cy={anchorY} r="15"
                           fill="transparent" style={{ cursor: 'grab' }}
                           onPointerDown={onSurferGhostDown(i, visualBand.freq)}
                           onContextMenu={onNodeContext(i)} />
                   {editSurfAnchor && (
-                    <circle cx={liveX} cy={liveY} r="3.4" fill={color} opacity="0.64" pointerEvents="none" />
+                    <circle cx={liveX} cy={liveY} r="3.4" fill={nodeColor} opacity={isMuted ? 0.28 : 0.64} pointerEvents="none" />
                   )}
                 </g>
               )}
 
               {/* Subtle glow when active */}
-              {(isActive || isDragging) && <circle cx={x} cy={y} r="14" fill={color} opacity="0.10" />}
+              {(isActive || isDragging) && <circle cx={x} cy={y} r="14" fill={nodeColor} opacity={isMuted ? 0.06 : 0.10} />}
               {isSurfing && !isDesser && <circle cx={x} cy={y} r={isActive ? 10 : 8}
-                                                fill="none" stroke={color} strokeWidth="0.75"
-                                                opacity={isActive ? 0.42 : 0.25} />}
+                                                fill="none" stroke={nodeColor} strokeWidth="0.75"
+                                                opacity={isMuted ? 0.16 : isActive ? 0.42 : 0.25} />}
 
               {/* Main node */}
-              <circle cx={x} cy={y} r={isActive ? 6 : 5} fill="white" stroke={color} strokeWidth={isActive ? 1.8 : 1.3}
+              <circle cx={x} cy={y} r={isActive ? 6 : 5} fill="white" stroke={nodeColor} strokeWidth={isActive ? 1.8 : 1.3}
                       style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.14))' }} />
-              <circle cx={x} cy={y} r="2" fill={color} opacity={isActive ? 1 : 0.6} />
+              <circle cx={x} cy={y} r="2" fill={nodeColor} opacity={isMuted ? 0.42 : isActive ? 1 : 0.6} />
               {!isSurferBell && (
                 <circle className="eq-node-hit" cx={x} cy={y} r="16" fill="transparent" style={{ cursor: 'grab' }}
                         onPointerDown={onNodeDown(i)} onContextMenu={onNodeContext(i)}
@@ -1807,7 +1797,7 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
                     onPointerDown={onCompDown(i, 1)}
                     onContextMenu={onNodeContext(i)}
                   >
-                    <path d={topArrowPath} fill={color} opacity="0.52" />
+                    <path d={topArrowPath} fill={nodeColor} opacity={isMuted ? 0.18 : 0.52} />
                     <circle r="8.5" fill="transparent" />
                   </g>
                   <g
@@ -1817,7 +1807,7 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
                     onPointerDown={onCompDown(i, -1)}
                     onContextMenu={onNodeContext(i)}
                   >
-                    <path d={bottomArrowPath} fill={color} opacity="0.52" />
+                    <path d={bottomArrowPath} fill={nodeColor} opacity={isMuted ? 0.18 : 0.52} />
                     <circle r="8.5" fill="transparent" />
                   </g>
                 </>
@@ -1839,6 +1829,16 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
             onClick={toggleActiveSolo}
           >
             S
+          </button>
+          <button
+            type="button"
+            className={`eq-mute-btn${activeBand.on === false ? ' muted' : ''}`}
+            aria-pressed={activeBand.on === false}
+            aria-label={activeBand.on === false ? 'Unmute band' : 'Mute band'}
+            title={activeBand.on === false ? 'Unmute band' : 'Mute band'}
+            onClick={toggleActiveMute}
+          >
+            M
           </button>
           <button type="button" className="eq-info-pair eq-info-drag freq" onPointerDown={onInfoDragStart('freq')} aria-label="Frequency">
             <b>F</b>{formatFreq(activeBand.type === 'Surfer Bell' ? activeDisplayBand.freq : activeBand.freq)}
@@ -1974,11 +1974,10 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
               </button>
             </div>
           )}
-          <button type="button" className="eq-node-delete" onClick={deleteActivePoint} disabled={points.length <= 0} aria-label="Delete band">
-            <svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-              <path d="M4.2 4.6h5.6M5.3 4.6v5.7M8.7 4.6v5.7M5.2 2.8h3.6l.4.9h2.1M2.9 3.7h8.2l-.5 8.1H3.4l-.5-8.1Z"
-                    stroke="currentColor" strokeWidth="1.15" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
+          <button type="button" className="eq-node-delete" onClick={deleteActivePoint} disabled={points.length <= 0} aria-label="Eliminar banda" title="Eliminar banda">
+            <span aria-hidden="true" style={{ display: 'inline-block', transform: 'translateY(-0.5px)' }}>
+              ×
+            </span>
           </button>
         </div>
       )}

@@ -1,7 +1,7 @@
 import React from "react";
 import { BypassBtn, PillGroup, Select } from "./controls.jsx";
 import { Knob } from "./knob.jsx";
-import { auxOutputOptions, delayDivisions, delayStyles, reverbModes, reverbPredelayDivisions } from "../pluginContract.js";
+import { delayDivisions, delayStyles, reverbModes, reverbPredelayDivisions } from "../pluginContract.js";
 
 // modules.jsx — Compressor modules with proper threshold/GR/output gain logic
 
@@ -455,23 +455,97 @@ function IYFViz({ active, amount, waveform }) {
 
 // ─── In Your Face (presence/saturation) ──────────────────────────────────────
 function PctModule({ name, value, onChange, on, setOn, signalActive, compact = false, waveform }) {
+  const amount = Math.max(0, Math.min(100, Number(value) || 0));
+  const ladderBars = 19;
+  const ladderProgress = (amount / 100) * ladderBars;
+  const setAmountFromPointer = (event, target) => {
+    const rect = target.getBoundingClientRect();
+    const next = ((event.clientX - rect.left) / rect.width) * 100;
+    onChange(Math.max(0, Math.min(100, next)));
+  };
+  const onGraphPointerDown = (event) => {
+    event.preventDefault();
+    const target = event.currentTarget;
+    target.setPointerCapture?.(event.pointerId);
+    setAmountFromPointer(event, target);
+
+    const move = (moveEvent) => setAmountFromPointer(moveEvent, target);
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
+  };
+  const onGraphKeyDown = (event) => {
+    const step = event.shiftKey ? 10 : 5;
+    if (event.key === 'ArrowRight' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      onChange(Math.min(100, amount + step));
+    } else if (event.key === 'ArrowLeft' || event.key === 'ArrowDown') {
+      event.preventDefault();
+      onChange(Math.max(0, amount - step));
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      onChange(0);
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      onChange(100);
+    }
+  };
+
   if (compact) {
     return (
-      <div className={`comp-unit comp-unit-mini${!on ? ' bypassed' : ''}`}>
+      <div className={`comp-unit comp-unit-mini iyf-unit${!on ? ' bypassed' : ''}`}>
         <div className="comp-unit-header">
           <BypassBtn on={on} onChange={setOn} />
           <span className="mod-name">{name}</span>
-          <DriveBars value={value} active={signalActive && on} />
+          <span className="iyf-unit-value">{Math.round(amount)}%</span>
         </div>
-        <div className="comp-unit-body">
-          <RackThresholdSlider
-            label="AMT"
-            value={value}
-            min={0}
-            max={100}
-            onChange={onChange}
-            format={(v) => `${Math.round(v)}%`}
-          />
+        <div className="comp-unit-body iyf-unit-body">
+          <div
+            className={`iyf-ladder-fader drive-bars${signalActive && on ? ' active' : ''}`}
+            role="slider"
+            tabIndex={0}
+            aria-label={`${name} amount`}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(amount)}
+            aria-valuetext={`${Math.round(amount)}%`}
+            style={{
+              '--iyf-amount': `${amount}%`,
+              '--iyf-glow': amount > 0 ? Math.min(1, 0.18 + amount / 64).toFixed(3) : '0',
+            }}
+            onPointerDown={onGraphPointerDown}
+            onKeyDown={onGraphKeyDown}
+          >
+            {Array.from({ length: ladderBars }).map((_, i) => {
+              const fill = Math.max(0, Math.min(1, ladderProgress - i));
+              const height = 20 + (i / (ladderBars - 1)) * 78;
+              const position = i / (ladderBars - 1);
+              const warm = Math.max(0, Math.min(1, (position - 0.25) / 0.75));
+              const warmPct = `${Math.round(warm * 100)}%`;
+              const warmSoftPct = `${Math.round(warm * 58)}%`;
+              const barGlow = (fill * (0.32 + warm * 0.68)).toFixed(3);
+              const barGlowSize = `${(3 + 5 * Number(barGlow)).toFixed(2)}px`;
+              return (
+                <span
+                  key={i}
+                  className={`drive-bar${fill > 0 ? ' lit warming' : ''}${fill > 0 && warm > 0.62 ? ' hot' : ''}`}
+                  style={{
+                    height: `${height}%`,
+                    '--bar-fill': fill.toFixed(3),
+                    '--bar-warm': warmPct,
+                    '--bar-warm-soft': warmSoftPct,
+                    '--bar-glow': barGlow,
+                    '--bar-glow-size': barGlowSize,
+                  }}
+                />
+              );
+            })}
+          </div>
         </div>
       </div>
     );
@@ -481,17 +555,17 @@ function PctModule({ name, value, onChange, on, setOn, signalActive, compact = f
     <div className={`comp-unit${!on ? ' bypassed' : ''}`}>
       <div className="comp-unit-header">
         <BypassBtn on={on} onChange={setOn} />
-        <span className="mod-name">{name}</span>
-        <div className="comp-unit-meta">
-          <span className="comp-meta-val">{Math.round(value)}%</span>
+          <span className="mod-name">{name}</span>
+          <div className="comp-unit-meta">
+          <span className="comp-meta-val">{Math.round(amount)}%</span>
+          </div>
         </div>
-      </div>
-      <div className="comp-unit-body">
-        <div className="comp-wave-wrap">
-          <IYFViz active={signalActive && on} amount={value} waveform={waveform} />
-        </div>
-        <div className="comp-fader-row">
-          <span className="comp-fader-lbl">AMT</span>
+        <div className="comp-unit-body">
+          <div className="comp-wave-wrap">
+          <IYFViz active={signalActive && on} amount={amount} waveform={waveform} />
+          </div>
+          <div className="comp-fader-row">
+            <span className="comp-fader-lbl">AMT</span>
           <div className="comp-fader-track"
             onPointerDown={(e) => {
               e.preventDefault();
@@ -508,28 +582,11 @@ function PctModule({ name, value, onChange, on, setOn, signalActive, compact = f
               window.addEventListener('pointerup', up);
             }}
           >
-            <div className="comp-fader-fill" style={{ width: `${value}%` }} />
-            <div className="comp-fader-handle" style={{ left: `${value}%` }} />
+            <div className="comp-fader-fill" style={{ width: `${amount}%` }} />
+            <div className="comp-fader-handle" style={{ left: `${amount}%` }} />
           </div>
         </div>
       </div>
-    </div>
-  );
-}
-
-function DriveBars({ value, active }) {
-  const bars = 5;
-  const lit = Math.round((Math.max(0, Math.min(100, value)) / 100) * bars);
-
-  return (
-    <div className={`drive-bars${active ? ' active' : ''}`} aria-hidden>
-      {Array.from({ length: bars }).map((_, i) => (
-        <span
-          key={i}
-          className={`drive-bar${i < lit ? ' lit' : ''}${i >= 3 && i < lit ? ' hot' : ''}`}
-          style={{ height: `${28 + i * 16}%` }}
-        />
-      ))}
     </div>
   );
 }
@@ -884,66 +941,18 @@ function StereoModule({ width, setWidth, lowBypass, setLowBypass, on, setOn }) {
       <ModuleHeader on={on} setOn={setOn} name="STEREOIDS" />
       <div className="stereo-body">
         <div className="stereo-knob-col">
-          <Knob value={width} onChange={setWidth} min={0} max={100} size={48}
+          <Knob value={width} onChange={setWidth} min={0} max={200} size={48}
                 defaultValue={100} color="var(--accent)" format={v => `${Math.round(v)}%`} disabled={!on} />
           <div className="stereo-knob-label">WIDTH</div>
         </div>
         <div className="stereo-knob-col">
-          <Knob value={lowBypass} onChange={setLowBypass} min={0} max={500} size={42}
+          <Knob value={lowBypass} onChange={setLowBypass} min={0} max={20000} size={42}
                 defaultValue={0} color="var(--neutral-knob)"
                 format={v => v < 1000 ? `${Math.round(v)}Hz` : `${(v/1000).toFixed(1)}k`}
                 disabled={!on} />
           <div className="stereo-knob-label">LOW BYPASS</div>
         </div>
       </div>
-    </div>
-  );
-}
-
-function ExtAuxSelect({ value = 'TRACK', onChange, disabled }) {
-  const [open, setOpen] = React.useState(false);
-  const ref = React.useRef(null);
-
-  React.useEffect(() => {
-    const onDoc = (e) => {
-      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
-    };
-    document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
-  }, []);
-
-  return (
-    <div className={`fx-aux${open ? ' open' : ''}${disabled ? ' disabled' : ''}`} ref={ref}>
-      <button
-        className="fx-aux-btn"
-        type="button"
-        disabled={disabled}
-        onClick={() => setOpen(o => !o)}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-      >
-        <span className="fx-aux-label">SEND TO</span>
-        <span className="fx-aux-value">{value}</span>
-        <svg width="8" height="8" viewBox="0 0 10 10" aria-hidden="true">
-          <path d="M2 4l3 3 3-3" stroke="currentColor" strokeWidth="1.3" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-      </button>
-      {open && (
-        <div className="fx-aux-menu" role="listbox">
-          {auxOutputOptions.map(option => (
-            <button
-              key={option}
-              type="button"
-              className={`fx-aux-item${option === value ? ' active' : ''}`}
-              onClick={() => { onChange(option); setOpen(false); }}
-              role="option"
-              aria-selected={option === value}
-            >
-              {option}
-            </button>
-          ))}
-        </div>
-      )}
     </div>
   );
 }
@@ -966,7 +975,6 @@ function DelayModule({ state, set, on, setOn }) {
         <ModuleHeader on={on} setOn={setOn} name="DELAY" />
         <Select value={state.preset} onChange={v => set({ preset: v })} options={delayStyles} floating />
       </div>
-      <ExtAuxSelect value={state.aux} onChange={v => set({ aux: v })} disabled={!on} />
       <div className="fx-knobs">
         <Knob value={state.mix} onChange={v => set({ mix: v })} min={0} max={100} size={40}
               color="var(--neutral-knob)" disabled={!on} format={v => `${Math.round(v)}%`} label="MIX" defaultValue={20} />
@@ -1021,7 +1029,6 @@ function ReverbModule({ state, set, on, setOn }) {
         <ModuleHeader on={on} setOn={setOn} name="REVERB" />
         <Select value={state.preset} onChange={v => set({ preset: v })} options={reverbModes} floating />
       </div>
-      <ExtAuxSelect value={state.aux} onChange={v => set({ aux: v })} disabled={!on} />
       <div className="fx-knobs">
         <Knob value={state.mix} onChange={v => set({ mix: v })} min={0} max={100} size={40}
               color="var(--neutral-knob)" disabled={!on} format={v => `${Math.round(v)}%`} label="MIX" defaultValue={18} />
@@ -1030,7 +1037,7 @@ function ReverbModule({ state, set, on, setOn }) {
         <Knob value={preDelayValue} onChange={v => preDelaySynced ? set({ preDelayIdx: v }) : set({ preDelay: v })} min={0} max={preDelaySynced ? reverbPredelayDivisions.length - 1 : 100} size={40}
               color="var(--accent-soft)" disabled={!on} format={v => preDelaySynced ? (reverbPredelayDivisions[Math.round(v)] || 'None') : formatPredelayMs(v)} label="PRE DLY" defaultValue={0} />
       </div>
-      <div className="rev-size-row">
+      <div className="rev-size-row reverb-size-row">
         <span className="rev-size-lbl">SIZE</span>
         <div className="rev-slider">
           <div className="rev-slider-track"
@@ -1055,6 +1062,7 @@ function ReverbModule({ state, set, on, setOn }) {
           <span className="rev-size-val">{Math.round(state.size)}%</span>
         </div>
       </div>
+      <div className="fx-tab-align-spacer" aria-hidden="true" />
       <div className="fx-pills-row">
         <PillGroup value={state.mode} onChange={v => set({ mode: v })} options={modes} stretch />
       </div>
@@ -1085,4 +1093,4 @@ function ReverbModule({ state, set, on, setOn }) {
   );
 }
 
-export { CompModule, ButterCompModule, PctModule, GateModule, DeEsserModule, StereoModule, DelayModule, ReverbModule, ExtAuxSelect };
+export { CompModule, ButterCompModule, PctModule, GateModule, DeEsserModule, StereoModule, DelayModule, ReverbModule };

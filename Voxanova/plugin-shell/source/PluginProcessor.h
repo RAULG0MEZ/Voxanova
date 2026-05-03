@@ -498,8 +498,6 @@ private:
   int lastReverbMode = -1;
   juce::AudioBuffer<float> monoWidenBuffer;
   int monoWidenWritePosition = 0;
-  std::array<float, 4> monoWidenAllpassLeft {};
-  std::array<float, 4> monoWidenAllpassRight {};
   float monoWidenSideLowpass = 0.0f;
   float gateEnvelope = 0.0f;
   float gateSmoothedGain = 1.0f;

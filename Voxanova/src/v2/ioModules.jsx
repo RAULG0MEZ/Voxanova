@@ -22,9 +22,7 @@ function notesToMask(notes) {
 
 function formatRetunePitch(value) {
   const amount = Math.max(0, Math.min(1, Number(value || 0) / 100));
-  if (amount >= 0.985) return 'HARD';
-
-  const retuneMs = 3.5 + Math.pow(1 - amount, 2.65) * 396.5;
+  const retuneMs = Math.pow(1 - amount, 2.65) * 400;
   return `${retuneMs < 10 ? retuneMs.toFixed(1) : Math.round(retuneMs)}ms`;
 }
 
@@ -176,8 +174,8 @@ function AutoTuneModule({
               label="RETUNE"
               format={formatRetunePitch} />
         <div className="at-selects">
-          <Select value={key_} onChange={setKey} options={AT_NOTES} />
-          <Select value={scale_} onChange={setScale} options={AT_SCALE_OPTIONS} />
+          <Select value={key_} onChange={setKey} options={AT_NOTES} floating />
+          <Select value={scale_} onChange={setScale} options={AT_SCALE_OPTIONS} floating />
         </div>
       </div>
       {scale_ === 'CUSTOM' && (

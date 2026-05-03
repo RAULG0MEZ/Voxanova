@@ -9,7 +9,6 @@ import {
   EQ_FILTER_TYPES,
   reverbPredelayDivisions,
   reverbModes,
-  auxOutputOptions,
   PLUGIN_HEIGHT,
   PLUGIN_WIDTH
 } from "./pluginContract.js";
@@ -32,7 +31,80 @@ const reverbPredelayDivisionMax = reverbPredelayDivisions.length - 1;
 const glueBandIds = ["glueLowThreshold", "glueLowMidThreshold", "glueHighMidThreshold", "glueAirThreshold"];
 const eqFilterTypeSet = new Set(EQ_FILTER_TYPES);
 const eqDynamicTypeSet = new Set(["Bell", "Surfer Bell", "Low Shelf", "High Shelf", "Band Pass"]);
-const auxOutputValue = Object.fromEntries(auxOutputOptions.map((option, index) => [option, index]));
+
+const LAYOUT_ANIMATION_MS = 280;
+const REAL_EQ_SOURCE_HEIGHT = 351;
+const REAL_RACK_SOURCE_HEIGHT = 347;
+const REAL_EQ_SOURCE_Y = 82;
+const REAL_RACK_SOURCE_Y = 433;
+
+const layoutTargets = {
+  normal: { eqGraphHeight: 320, realEqHeight: 351, realRackHeight: 347 },
+  eq: { eqGraphHeight: 390, realEqHeight: 423, realRackHeight: 275 },
+  stack: { eqGraphHeight: 304, realEqHeight: 335, realRackHeight: 363 },
+};
+
+const resolveLayoutKey = (focus) => (focus === 'eq' || focus === 'stack' ? focus : 'normal');
+const easeLayout = (t) => 1 - Math.pow(1 - t, 3);
+const mixLayoutValue = (from, to, t) => from + (to - from) * t;
+
+function getLayoutStyle(metrics) {
+  const eqScale = metrics.realEqHeight / REAL_EQ_SOURCE_HEIGHT;
+  const rackScale = metrics.realRackHeight / REAL_RACK_SOURCE_HEIGHT;
+
+  return {
+    '--real-eq-height': `${metrics.realEqHeight.toFixed(3)}px`,
+    '--real-rack-height': `${metrics.realRackHeight.toFixed(3)}px`,
+    '--real-eq-bg-height': `${(PLUGIN_HEIGHT * eqScale).toFixed(3)}px`,
+    '--real-eq-bg-y': `${(-REAL_EQ_SOURCE_Y * eqScale).toFixed(3)}px`,
+    '--real-rack-bg-height': `${(PLUGIN_HEIGHT * rackScale).toFixed(3)}px`,
+    '--real-rack-bg-y': `${(-REAL_RACK_SOURCE_Y * rackScale).toFixed(3)}px`,
+  };
+}
+
+function useAnimatedLayout(targetFocus) {
+  const [visualFocus, setVisualFocus] = useState(targetFocus);
+  const [metrics, setMetrics] = useState(() => layoutTargets[resolveLayoutKey(targetFocus)]);
+  const metricsRef = useRef(metrics);
+
+  useLayoutEffect(() => {
+    const targetKey = resolveLayoutKey(targetFocus);
+    const target = layoutTargets[targetKey];
+    const from = metricsRef.current;
+    let raf = 0;
+    let startedAt = 0;
+
+    const tick = (now) => {
+      if (!startedAt) startedAt = now;
+      const progress = Math.min(1, (now - startedAt) / LAYOUT_ANIMATION_MS);
+      const eased = easeLayout(progress);
+      const next = {
+        eqGraphHeight: mixLayoutValue(from.eqGraphHeight, target.eqGraphHeight, eased),
+        realEqHeight: mixLayoutValue(from.realEqHeight, target.realEqHeight, eased),
+        realRackHeight: mixLayoutValue(from.realRackHeight, target.realRackHeight, eased),
+      };
+
+      metricsRef.current = next;
+      setMetrics(next);
+
+      if (progress < 1) {
+        raf = window.requestAnimationFrame(tick);
+      } else {
+        metricsRef.current = target;
+        setMetrics(target);
+      }
+    };
+
+    raf = window.requestAnimationFrame((now) => {
+      setVisualFocus(targetFocus);
+      tick(now);
+    });
+
+    return () => window.cancelAnimationFrame(raf);
+  }, [targetFocus]);
+
+  return { visualFocus, metrics };
+}
 const reverbModeByV2Preset = {
   "Concert Hall": 0,
   Plate: 2,
@@ -51,16 +123,6 @@ const v2PresetByReverbMode = {
 const DEFAULT_EQ_Q = 5;
 const DEFAULT_EQ_SHELF_Q = 1.3;
 const DEFAULT_EQ_LOW_CUT_SLOPE = 30;
-const stackDensitySteps = ["normal", "soft", "compact"];
-
-function getStackOverflow(row) {
-  if (!row) return 0;
-  const cards = Array.from(row.querySelectorAll(".module, .module-stack"));
-  return cards.reduce((overflow, card) => (
-    Math.max(overflow, card.scrollHeight - card.clientHeight)
-  ), 0);
-}
-
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
@@ -335,7 +397,7 @@ function metersFromPayload(current, payload) {
 
 // Voxanova V2 — main app
 const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
-  "theme": "midnight",
+  "theme": "real",
   "showWaveform": true,
   "signalActive": true
 }/*EDITMODE-END*/;
@@ -353,6 +415,8 @@ const THEMES = [
     swatch: 'linear-gradient(135deg, oklch(96% 0.014 168) 0%, oklch(86% 0.08 175) 100%)' },
   { id: 'mono',     label: 'Paper',    mode: 'light', accent: 'oklch(20% 0 0)',
     swatch: 'linear-gradient(135deg, oklch(98% 0 0) 0%, oklch(82% 0 0) 100%)' },
+  { id: 'real-paper', label: 'Real Paper', mode: 'light', accent: 'oklch(20% 0 0)',
+    swatch: 'linear-gradient(135deg, oklch(99% 0 0) 0%, oklch(88% 0 0) 50%, oklch(96% 0 0) 100%)' },
   // Dark
   { id: 'midnight', label: 'Midnight', mode: 'dark',  accent: 'oklch(68% 0.16 248)',
     swatch: 'linear-gradient(135deg, oklch(22% 0.014 268) 0%, oklch(40% 0.14 248) 100%)' },
@@ -362,6 +426,12 @@ const THEMES = [
     swatch: 'linear-gradient(135deg, oklch(20% 0.020 168) 0%, oklch(46% 0.14 165) 100%)' },
   { id: 'obsidian', label: 'Obsidian', mode: 'dark',  accent: 'oklch(92% 0 0)',
     swatch: 'linear-gradient(135deg, oklch(15% 0 0) 0%, oklch(50% 0 0) 100%)' },
+  { id: 'real',     label: 'Real',     mode: 'dark',  accent: 'oklch(82% 0.045 96)',
+    swatch: 'linear-gradient(135deg, oklch(12% 0.004 96) 0%, oklch(42% 0.006 96) 52%, oklch(18% 0.004 96) 100%)' },
+  { id: 'real-noir', label: 'Real Noir', mode: 'dark', accent: 'oklch(82% 0.030 112)',
+    swatch: 'linear-gradient(135deg, oklch(4% 0.002 112) 0%, oklch(18% 0.004 112) 48%, oklch(7% 0.002 112) 100%)' },
+  { id: 'real-frost', label: 'Real Frost', mode: 'light', accent: 'oklch(52% 0.070 246)',
+    swatch: 'linear-gradient(135deg, oklch(99% 0.002 246) 0%, oklch(86% 0.006 246) 48%, oklch(96% 0.003 246) 100%)' },
 ];
 
 const THEME_BY_ID = Object.fromEntries(THEMES.map(t => [t.id, t]));
@@ -755,9 +825,8 @@ function App() {
   const themeMeta = THEME_BY_ID[themeId];
   const [themeMenuOpen, setThemeMenuOpen] = useState(false);
   const [layoutFocus, setLayoutFocus] = useState(null);
-  const [stackDensity, setStackDensity] = useState("normal");
+  const { visualFocus, metrics: layoutMetrics } = useAnimatedLayout(layoutFocus);
   const pluginRef = useRef(null);
-  const modulesRowRef = useRef(null);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -960,8 +1029,7 @@ function App() {
     postReverb: boolFromParam(values.delayPostReverb),
     lowCut: valueToRange(values.delayLowCut, 20, 500),
     highCut: valueToRange(values.delayHighCut, 2000, 20000),
-    aux: auxOutputOptions[clamp(Math.round(values.delayAuxBus), 0, auxOutputOptions.length - 1)] || 'TRACK',
-  }), [values.delayAuxBus, values.delayDivision, values.delayFeedback, values.delayHighCut, values.delayLowCut, values.delayMix, values.delayMode, values.delayNoteMode, values.delayPostReverb, values.delayStyle, values.delaySync, values.delayTimeMs]);
+  }), [values.delayDivision, values.delayFeedback, values.delayHighCut, values.delayLowCut, values.delayMix, values.delayMode, values.delayNoteMode, values.delayPostReverb, values.delayStyle, values.delaySync, values.delayTimeMs]);
   const setDelayOn = useCallback((value) => setParam("delayEnabled", value), [setParam]);
   const setDelay = useCallback((patch) => {
     if (Object.prototype.hasOwnProperty.call(patch, "preset")) setParam("delayStyle", presetIndex(delayStyles, patch.preset));
@@ -975,7 +1043,6 @@ function App() {
     if (Object.prototype.hasOwnProperty.call(patch, "postReverb")) setParam("delayPostReverb", patch.postReverb);
     if (Object.prototype.hasOwnProperty.call(patch, "lowCut")) setParam("delayLowCut", rangeToPercent(patch.lowCut, 20, 500));
     if (Object.prototype.hasOwnProperty.call(patch, "highCut")) setParam("delayHighCut", rangeToPercent(patch.highCut, 2000, 20000));
-    if (Object.prototype.hasOwnProperty.call(patch, "aux")) setParam("delayAuxBus", auxOutputValue[patch.aux] ?? 0);
   }, [setParam]);
 
   const reverbOn = boolFromParam(values.reverbEnabled);
@@ -993,8 +1060,7 @@ function App() {
     size: values.reverbSize,
     lowCut: valueToRange(values.reverbLowCut, 20, 500),
     highCut: valueToRange(values.reverbHighCut, 2000, 20000),
-    aux: auxOutputOptions[clamp(Math.round(values.reverbAuxBus), 0, auxOutputOptions.length - 1)] || 'TRACK',
-  }), [values.reverbAuxBus, values.reverbDecay, values.reverbDecayDivision, values.reverbDecaySync, values.reverbHighCut, values.reverbLowCut, values.reverbMix, values.reverbMode, values.reverbNoteMode, values.reverbPredelay, values.reverbPredelayDivision, values.reverbPredelaySync, values.reverbSize, values.reverbSync]);
+  }), [values.reverbDecay, values.reverbDecayDivision, values.reverbDecaySync, values.reverbHighCut, values.reverbLowCut, values.reverbMix, values.reverbMode, values.reverbNoteMode, values.reverbPredelay, values.reverbPredelayDivision, values.reverbPredelaySync, values.reverbSize, values.reverbSync]);
   const setReverbOn = useCallback((value) => setParam("reverbEnabled", value), [setParam]);
   const setReverb = useCallback((patch) => {
     if (Object.prototype.hasOwnProperty.call(patch, "preset")) setParam("reverbMode", reverbModeByV2Preset[patch.preset] ?? presetIndex(reverbModes, patch.preset));
@@ -1010,7 +1076,6 @@ function App() {
     if (Object.prototype.hasOwnProperty.call(patch, "size")) setParam("reverbSize", patch.size);
     if (Object.prototype.hasOwnProperty.call(patch, "lowCut")) setParam("reverbLowCut", rangeToPercent(patch.lowCut, 20, 500));
     if (Object.prototype.hasOwnProperty.call(patch, "highCut")) setParam("reverbHighCut", rangeToPercent(patch.highCut, 2000, 20000));
-    if (Object.prototype.hasOwnProperty.call(patch, "aux")) setParam("reverbAuxBus", auxOutputValue[patch.aux] ?? 0);
   }, [setParam]);
 
   // AutoTune
@@ -1035,64 +1100,14 @@ function App() {
   const outputGain = values.outputGain;
   const setInputGain = useCallback((value) => setParam("inputGain", value), [setParam]);
   const setOutputGain = useCallback((value) => setParam("outputGain", value), [setParam]);
-  const eqGraphHeight = layoutFocus === 'eq' ? 390 : layoutFocus === 'stack' ? 304 : 320;
-
-  const syncStackDensity = useCallback(() => {
-    const plugin = pluginRef.current;
-    const row = modulesRowRef.current;
-    const shouldMeasureStack = layoutFocus === 'eq' || layoutFocus === 'stack';
-    if (!row || !shouldMeasureStack) {
-      if (plugin) plugin.dataset.stackDensity = "normal";
-      if (row) row.dataset.stackDensity = "normal";
-      setStackDensity("normal");
-      return;
-    }
-
-    let selected = stackDensitySteps[stackDensitySteps.length - 1];
-    for (const density of stackDensitySteps) {
-      if (plugin) plugin.dataset.stackDensity = density;
-      row.dataset.stackDensity = density;
-      void row.offsetHeight;
-      if (getStackOverflow(row) <= 2) {
-        selected = density;
-        break;
-      }
-    }
-
-    if (plugin) plugin.dataset.stackDensity = selected;
-    row.dataset.stackDensity = selected;
-    setStackDensity(current => current === selected ? current : selected);
-  }, [layoutFocus]);
-
-  useLayoutEffect(() => {
-    let raf = 0;
-    const row = modulesRowRef.current;
-    const schedule = () => {
-      if (raf) cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(syncStackDensity);
-    };
-
-    schedule();
-
-    if (!row || typeof ResizeObserver === 'undefined') {
-      window.addEventListener('resize', schedule);
-      return () => {
-        if (raf) cancelAnimationFrame(raf);
-        window.removeEventListener('resize', schedule);
-      };
-    }
-
-    const observer = new ResizeObserver(schedule);
-    observer.observe(row);
-    Array.from(row.children).forEach((child) => observer.observe(child));
-    window.addEventListener('resize', schedule);
-
-    return () => {
-      if (raf) cancelAnimationFrame(raf);
-      observer.disconnect();
-      window.removeEventListener('resize', schedule);
-    };
-  }, [syncStackDensity]);
+  const isRealTheme = themeId.startsWith("real");
+  const visualLayoutKey = resolveLayoutKey(visualFocus);
+  const eqGraphHeight = layoutMetrics.eqGraphHeight;
+  const stackDensity = !isRealTheme && visualLayoutKey === 'eq' ? "compact" : "normal";
+  const realLayoutStyle = useMemo(
+    () => (isRealTheme ? getLayoutStyle(layoutMetrics) : undefined),
+    [isRealTheme, layoutMetrics]
+  );
 
   const [presetIdx, setPresetIdx] = useState(0);
   const [presetOpen, setPresetOpen] = useState(false);
@@ -1109,12 +1124,19 @@ function App() {
     <div
       className="plugin"
       ref={pluginRef}
-      data-layout-focus={layoutFocus || 'normal'}
+      style={realLayoutStyle}
+      data-layout-focus={visualLayoutKey}
       data-stack-density={stackDensity}
       onPointerLeave={() => setLayoutFocus(null)}
     >
+      <div className="real-bg" aria-hidden="true">
+        <div className="real-bg-slice real-bg-header" />
+        <div className="real-bg-slice real-bg-eq" />
+        <div className="real-bg-slice real-bg-rack" />
+        <div className="real-bg-slice real-bg-footer" />
+      </div>
       {/* ── Header ── */}
-      <div className="plugin-header" onPointerEnter={() => setLayoutFocus(null)}>
+      <div className="plugin-header" onPointerMove={() => setLayoutFocus(null)}>
         <div className="brand">
           <button type="button" className="brand-mark" onClick={() => setInfoOpen(true)} aria-haspopup="dialog">
             Voxanova
@@ -1182,7 +1204,7 @@ function App() {
       {infoOpen && <PluginInfoModal nativeOnline={nativeOnline} onClose={() => setInfoOpen(false)} />}
 
       {/* ── EQ ── */}
-      <div className="eq-section" onPointerEnter={() => setLayoutFocus('eq')}>
+      <div className="eq-section" onPointerMove={() => setLayoutFocus('eq')}>
         <EQCurve
           postPoints={eqPostPoints}
           setPostPoints={setEqPostPointsFromUi}
@@ -1209,9 +1231,8 @@ function App() {
       {/* ── Modules ── */}
       <div
         className="modules-row"
-        ref={modulesRowRef}
         data-stack-density={stackDensity}
-        onPointerEnter={() => setLayoutFocus('stack')}
+        onPointerMove={() => setLayoutFocus('stack')}
       >
         {/* Peak Sniper + Butter Comp stacked */}
         <div className="module module-stack">
@@ -1294,7 +1315,7 @@ function App() {
       </div>
 
       {/* ── Footer I/O ── */}
-      <div className="footer-meta" onPointerEnter={() => setLayoutFocus(null)}>
+      <div className="footer-meta" onPointerMove={() => setLayoutFocus(null)}>
         <FooterGainControl
           label="INPUT"
           value={inputGain}

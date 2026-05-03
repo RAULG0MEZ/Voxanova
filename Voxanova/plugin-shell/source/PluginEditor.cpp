@@ -10,7 +10,7 @@ constexpr int baseEditorWidth = 1360;
 constexpr int baseEditorHeight = 820;
 constexpr float minEditorScale = 0.5f;
 constexpr float maxEditorScale = 2.0f;
-constexpr const char* webAssetVersion = "20260503-89";
+constexpr const char* webAssetVersion = "20260503-97";
 
 juce::WebBrowserComponent::Resource makeTextResource(const juce::String& text)
 {

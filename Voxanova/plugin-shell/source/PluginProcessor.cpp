@@ -183,9 +183,6 @@ juce::String tuneKeyLabel(float value, int)
 juce::String retunePitchLabel(float value, int)
 {
   const auto amount = juce::jlimit(0.0f, 1.0f, value / 100.0f);
-  if (amount >= 0.985f)
-    return "Hard";
-
   const auto retuneMs = FatTuneEngine::retuneMillisecondsForAmount(amount);
   return juce::String(retuneMs, retuneMs < 10.0f ? 1 : 0) + " ms";
 }
@@ -335,8 +332,8 @@ VoxanovaAudioProcessor::APVTS::ParameterLayout VoxanovaAudioProcessor::createPar
   addFloat(inputGainId, "Input Gain", -24.0f, 24.0f, 0.1f, 0.0f, dbLabel);
   addFloat(outputGainId, "Output Gain", -24.0f, 24.0f, 0.1f, 0.0f, dbLabel);
   addFloat(gateThresholdId, "Gate Threshold", -80.0f, 0.0f, 0.1f, -80.0f, dbLabel);
-  addFloat(stereoWidthId, "Stereo Width", 0.0f, 100.0f, 1.0f, 0.0f, percentLabel);
-  addFloat(stereoLowBypassId, "Stereo Low Bypass", 0.0f, 500.0f, 1.0f, 0.0f, hzLabel);
+  addFloat(stereoWidthId, "Stereo Width", 0.0f, 200.0f, 1.0f, 0.0f, percentLabel);
+  addFloat(stereoLowBypassId, "Stereo Low Bypass", 0.0f, 20000.0f, 1.0f, 0.0f, hzLabel);
   addFloat(preSaturationModeId, "Pre Saturation Type", 0.0f, 3.0f, 1.0f, 0.0f, saturationModeLabel);
   addFloat(preSaturationAmountId, "Pre Saturation Amount", 0.0f, 100.0f, 1.0f, 0.0f, percentLabel);
   addFloat(postSaturationModeId, "Post Saturation Type", 0.0f, 3.0f, 1.0f, 0.0f, saturationModeLabel);
@@ -467,10 +464,8 @@ void VoxanovaAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBloc
   monoWidenBuffer.clear();
   prepareSpectra();
   tuneEngine.prepare(sampleRate, samplesPerBlock);
-  setLatencySamples(tuneEngine.getLatencySamples());
+  setLatencySamples(0);
   monoWidenWritePosition = 0;
-  monoWidenAllpassLeft = {};
-  monoWidenAllpassRight = {};
   monoWidenSideLowpass = 0.0f;
   gateEnvelope = 0.0f;
   gateSmoothedGain = 1.0f;
@@ -605,8 +600,9 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
   const auto inputGain = dbToGain(inputGainParam->load());
   const auto outputGain = dbToGain(outputGainParam->load());
   const auto gateThresholdDb = gateParam->load();
-  const auto stereoWidth = juce::jlimit(0.0f, 1.0f, stereoWidthParam->load() / 100.0f);
-  const auto stereoLowBypassHz = juce::jlimit(0.0f, 500.0f, stereoLowBypassParam->load());
+  const auto stereoWidthPercent = juce::jlimit(0.0f, 200.0f, stereoWidthParam->load());
+  const auto stereoWidth = stereoWidthPercent / 100.0f;
+  const auto stereoLowBypassHz = juce::jlimit(0.0f, 20000.0f, stereoLowBypassParam->load());
   const auto preSaturationMode = juce::jlimit(0, 3, juce::roundToInt(preSaturationModeParam->load()));
   const auto preSaturationAmount = juce::jlimit(0.0f, 100.0f, preSaturationAmountParam->load());
   const auto postSaturationMode = juce::jlimit(0, 3, juce::roundToInt(postSaturationModeParam->load()));
@@ -711,8 +707,6 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
   {
     monoWidenBuffer.clear();
     monoWidenWritePosition = 0;
-    monoWidenAllpassLeft = {};
-    monoWidenAllpassRight = {};
     monoWidenSideLowpass = 0.0f;
   }
 
@@ -1517,55 +1511,44 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
       gateOutputWaveformPeak = 0.0f;
     }
 
-    if (stereoEnabled && totalInputChannels == 1 && totalOutputChannels > 1)
-    {
-      const auto mono = (left + right) * 0.5f;
-      const auto lowAnchor =
-          stereoLowBypassHz > 0.5f ? processOnePoleLowpass(mono, stereoLowBypassHz, monoWidenSideLowpass) : 0.0f;
-      const auto widenInput = mono - lowAnchor;
-
-      auto processAllpass = [](float input, float coefficient, float& state) {
-        const auto output = -coefficient * input + state;
-        state = input + coefficient * output;
-        return output;
-      };
-
-      auto decorrelate = [&processAllpass](float input, std::array<float, 4>& states,
-                                           const std::array<float, 4>& coefficients) {
-        auto output = input;
-        for (auto i = 0u; i < states.size(); ++i)
-          output = processAllpass(output, coefficients[i], states[i]);
-        return output;
-      };
-
-      constexpr std::array<float, 4> leftCoefficients { 0.6923878f, 0.9360654f, 0.9882295f, 0.9987488f };
-      constexpr std::array<float, 4> rightCoefficients { 0.4021921f, 0.8561711f, 0.9722910f, 0.9952885f };
-      const auto decorrelatedLeft = decorrelate(widenInput, monoWidenAllpassLeft, leftCoefficients);
-      const auto decorrelatedRight = decorrelate(widenInput, monoWidenAllpassRight, rightCoefficients);
-
-      const auto widthCurve = std::pow(stereoWidth, 0.58f);
-      const auto dryGain = std::cos(widthCurve * juce::MathConstants<float>::halfPi);
-      const auto wetGain = std::sin(widthCurve * juce::MathConstants<float>::halfPi);
-      const auto centerAnchor = wetGain * 0.08f;
-      const auto crossfeed = wetGain * 0.045f;
-      const auto centerGain = dryGain + centerAnchor;
-      const auto mainWet = wetGain * 0.92f;
-      const auto makeup = 1.0f / std::sqrt(centerGain * centerGain + mainWet * mainWet + crossfeed * crossfeed);
-      left = lowAnchor + (widenInput * centerGain + decorrelatedLeft * mainWet + decorrelatedRight * crossfeed) * makeup;
-      right = lowAnchor + (widenInput * centerGain + decorrelatedRight * mainWet + decorrelatedLeft * crossfeed) * makeup;
-    }
-    else if (stereoEnabled && totalOutputChannels > 1)
+    if (stereoEnabled && totalOutputChannels > 1)
     {
       const auto mid = (left + right) * 0.5f;
-      const auto widthCurve = std::pow(stereoWidth, 0.72f);
-      const auto sideMultiplier = widthCurve * 2.35f;
       const auto rawSide = (left - right) * 0.5f;
-      const auto lowSide =
-          stereoLowBypassHz > 0.5f ? processOnePoleLowpass(rawSide, stereoLowBypassHz, monoWidenSideLowpass) : 0.0f;
-      const auto side = lowSide * widthCurve + (rawSide - lowSide) * sideMultiplier;
-      const auto makeup = 1.0f / std::sqrt(1.0f + sideMultiplier * sideMultiplier * 0.08f);
-      left = (mid + side) * makeup;
-      right = (mid - side) * makeup;
+      const auto lowAnchor =
+          stereoLowBypassHz > 0.5f ? processOnePoleLowpass(mid, stereoLowBypassHz, monoWidenSideLowpass) : 0.0f;
+      const auto widenInput = mid - lowAnchor;
+      auto generatedSide = 0.0f;
+      const auto widenBufferSize = monoWidenBuffer.getNumSamples();
+      if (widenBufferSize > 2)
+      {
+        auto readMonoWidenDelay = [this, widenBufferSize](float delaySamples) {
+          auto readPosition = static_cast<float>(monoWidenWritePosition) - delaySamples;
+          while (readPosition < 0.0f)
+            readPosition += static_cast<float>(widenBufferSize);
+
+          const auto indexA = juce::jlimit(0, widenBufferSize - 1, static_cast<int>(readPosition));
+          const auto indexB = (indexA + 1) % widenBufferSize;
+          const auto fraction = readPosition - static_cast<float>(indexA);
+          return monoWidenBuffer.getSample(0, indexA) * (1.0f - fraction) +
+                 monoWidenBuffer.getSample(0, indexB) * fraction;
+        };
+
+        const auto delayMs =
+            stereoWidthPercent <= 100.0f
+                ? 1.25f + stereoWidthPercent * 0.025f
+                : 3.75f + (stereoWidthPercent - 100.0f) * (2.9166667f / 100.0f);
+        const auto delaySamples = juce::jlimit(1.0f, static_cast<float>(widenBufferSize - 2),
+                                               delayMs * static_cast<float>(currentSampleRate) / 1000.0f);
+        generatedSide = readMonoWidenDelay(delaySamples) * juce::jmin(stereoWidth, 1.0f);
+
+        monoWidenBuffer.setSample(0, monoWidenWritePosition, widenInput);
+        monoWidenWritePosition = (monoWidenWritePosition + 1) % widenBufferSize;
+      }
+
+      const auto side = rawSide + generatedSide;
+      left = mid + side;
+      right = mid - side;
     }
 
     const auto dryLeft = left;
