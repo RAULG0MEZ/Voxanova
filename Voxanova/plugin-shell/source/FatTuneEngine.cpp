@@ -155,8 +155,11 @@ void FatTuneEngine::reset()
   pitchRatio = 1.0f;
   correctionFilter = 0.12f;
   correctionGain = 1.0f;
-  correctionOffsetSemitones = 0.0f;
+  correctionOvershoot = 1.0f;
   noteBias = 0.038f;
+  detectorFollowFast = 0.45f;
+  detectorFollowSlow = 0.28f;
+  analysisIntervalFragments = 4;
   lastNote = -1;
   detectedNoteBits = 0;
   unvoicedCounter = 5;
@@ -222,11 +225,15 @@ void FatTuneEngine::configureCorrection(const Settings& settings)
 {
   const auto amountNorm = settings.enabled ? juce::jlimit(0.0f, 1.0f, settings.amount / 100.0f) : 0.0f;
   const auto retuneSeconds = retuneMillisecondsForAmount(amountNorm) / 1000.0f;
+  const auto pitchLock = std::pow(amountNorm, 1.35f);
   correctionFilter =
       juce::jlimit(0.015f, 1.0f, static_cast<float>((4.0 * fragmentSize) / (retuneSeconds * sampleRate)));
   correctionGain = settings.enabled ? 1.0f : 0.0f;
-  correctionOffsetSemitones = juce::jlimit(-24.0f, 24.0f, settings.pitchShiftSemitones);
-  noteBias = 0.50f / 13.0f;
+  correctionOvershoot = settings.enabled ? 1.0f + pitchLock * 0.085f : 1.0f;
+  noteBias = juce::jlimit(0.004f, 0.50f / 13.0f, (0.50f / 13.0f) * (1.0f - 0.86f * pitchLock));
+  detectorFollowFast = 0.45f + pitchLock * 0.42f;
+  detectorFollowSlow = 0.30f + pitchLock * 0.39f;
+  analysisIntervalFragments = amountNorm >= 0.70f ? 2 : 4;
   fastMode = false;
 }
 
@@ -378,7 +385,7 @@ void FatTuneEngine::analysePitch(int noteMask)
   if (!hasSmoothedMidi || std::abs(nextMidi - smoothedMidi) > 7.0f)
     smoothedMidi = nextMidi;
   else
-    smoothedMidi += (nextMidi - smoothedMidi) * (bestValue > 0.82f ? 0.45f : 0.28f);
+    smoothedMidi += (nextMidi - smoothedMidi) * (bestValue > 0.82f ? detectorFollowFast : detectorFollowSlow);
 
   cycleSamples = static_cast<float>(sampleRate) / (440.0f * std::pow(2.0f, (smoothedMidi - 69.0f) / 12.0f));
   detectedFrequency = static_cast<float>(sampleRate) / cycleSamples;
@@ -443,16 +450,18 @@ void FatTuneEngine::updateCorrection(int noteMask)
   meters.frequency = detectedFrequency;
   meters.cents = juce::jlimit(-100.0f, 100.0f, (detectedMidi - targetMidi) * 100.0f);
   meters.confidence = juce::jlimit(0.0f, 100.0f, detectedClarity * 100.0f);
-  meters.targetMidi = targetMidi + correctionOffsetSemitones;
+  meters.targetMidi = targetMidi;
 }
 
 void FatTuneEngine::updateJumpState(int noteMask)
 {
-  if (++fragmentCounter == 4)
+  if (++fragmentCounter >= analysisIntervalFragments)
   {
     fragmentCounter = 0;
     analysePitch(noteMask);
-    pitchRatio = std::pow(2.0f, correctionOffsetSemitones / 12.0f - pitchErrorOctaves * correctionGain);
+    const auto confidenceLock = juce::jlimit(0.0f, 1.0f, (detectedClarity - 0.58f) / 0.28f);
+    const auto appliedCorrectionGain = correctionGain * (1.0f + (correctionOvershoot - 1.0f) * confidenceLock);
+    pitchRatio = std::pow(2.0f, -pitchErrorOctaves * appliedCorrectionGain);
     pitchRatio = juce::jlimit(0.50f, 2.0f, pitchRatio);
   }
 

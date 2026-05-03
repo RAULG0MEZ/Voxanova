@@ -17,6 +17,7 @@ public:
   using APVTS = juce::AudioProcessorValueTreeState;
   static constexpr auto waveformSampleCount = 256;
   static constexpr auto spectrumBinCount = 256;
+  static constexpr auto eqMeterBandCount = 128;
 
   struct MeterSnapshot
   {
@@ -33,6 +34,8 @@ public:
     std::array<float, waveformSampleCount> gateOutputWaveform {};
     std::array<float, spectrumBinCount> preCompSpectrum {};
     std::array<float, spectrumBinCount> postCompSpectrum {};
+    std::array<float, eqMeterBandCount> preEqDetectorDbs {};
+    std::array<float, eqMeterBandCount> postEqDetectorDbs {};
     float peakLevel = 0.0f;
     float glueLevel = 0.0f;
     float faceLevel = 0.0f;
@@ -260,6 +263,7 @@ private:
           stage.reset();
       compEnvelope = 0.0f;
       compGainDb = 0.0f;
+      compDetectorDb = -120.0f;
       compGainInitialized = false;
     }
 
@@ -271,6 +275,7 @@ private:
     float deEsserGain = 1.0f;
     float compEnvelope = 0.0f;
     float compGainDb = 0.0f;
+    float compDetectorDb = -120.0f;
     float surferRatio = 0.0f;
     float surferFrequency = 0.0f;
     float previousStaticFrequency = 0.0f;
@@ -362,13 +367,16 @@ private:
   void configureEqBandSolo(EqBandState& state, const EqBandSettings& settings) const;
   void configureEqBandForGain(EqBandState& state, const EqBandSettings& settings, float gainDb) const;
   void configureEqBandCompressionDetector(EqBandState& state, const EqBandSettings& settings) const;
+  float updateEqBandDetectorLevel(EqBandState& state, const EqBandSettings& settings, float left, float right) const;
   void prepareEq(std::vector<EqBandState>& states, const std::vector<EqBandSettings>& settings) const;
-  void applyEq(std::vector<EqBandState>& states, const std::vector<EqBandSettings>& settings, float& left, float& right);
+  void applyEq(std::vector<EqBandState>& states, const std::vector<EqBandSettings>& settings, float& left,
+               float& right, std::array<std::atomic<float>, eqMeterBandCount>& detectorDbMeters);
   void applyEqDeEsser(EqBandState& state, const EqBandSettings& settings, float& left, float& right);
   float updateEqBandDynamicGain(EqBandState& state, const EqBandSettings& settings, float left, float right) const;
   void resetEqStates(std::vector<EqBandState>& states);
   static bool eqBandHasEffect(const EqBandSettings& settings);
   static bool eqBandSupportsCompression(const EqBandSettings& settings);
+  static bool eqBandHasCompressionTarget(const EqBandSettings& settings);
   static bool eqBandHasCompression(const EqBandSettings& settings);
   static bool eqBandsNeedPitchTracking(const std::vector<EqBandSettings>& settings);
   static int eqFilterStageCount(int slopeDb);
@@ -406,7 +414,6 @@ private:
   std::atomic<float>* tuneKeyParam = nullptr;
   std::atomic<float>* tuneScaleParam = nullptr;
   std::atomic<float>* tuneCustomNotesParam = nullptr;
-  std::atomic<float>* tunePitchShiftParam = nullptr;
   std::atomic<float>* peakEnabledParam = nullptr;
   std::atomic<float>* peakThresholdParam = nullptr;
   std::atomic<float>* glueEnabledParam = nullptr;
@@ -511,6 +518,8 @@ private:
   CompressorState faceCompressorState;
   CompressorState postCompressorState;
   std::vector<EqBandState> postEqStates;
+  std::array<std::atomic<float>, eqMeterBandCount> preEqDetectorDbMeters {};
+  std::array<std::atomic<float>, eqMeterBandCount> postEqDetectorDbMeters {};
   SaturationState postSaturationState;
   std::array<std::atomic<float>, 2> inputMeterPeaks {};
   std::array<std::atomic<float>, 2> outputMeterPeaks {};

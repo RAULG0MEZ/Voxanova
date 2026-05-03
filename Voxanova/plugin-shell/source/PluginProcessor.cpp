@@ -21,7 +21,6 @@ constexpr auto tuneAmountId = "tuneAmount";
 constexpr auto tuneKeyId = "tuneKey";
 constexpr auto tuneScaleId = "tuneScale";
 constexpr auto tuneCustomNotesId = "tuneCustomNotes";
-constexpr auto tunePitchShiftId = "tunePitchShift";
 constexpr auto peakEnabledId = "peakEnabled";
 constexpr auto peakThresholdId = "peakThreshold";
 constexpr auto glueEnabledId = "glueEnabled";
@@ -69,6 +68,7 @@ constexpr auto delayAuxBusId = "delayAuxBus";
 constexpr auto reverbAuxBusId = "reverbAuxBus";
 constexpr auto compressorMinDb = -60.0f;
 constexpr auto compressorMaxDb = 0.0f;
+constexpr auto eqDynamicDetectorCalibrationDb = 12.0f;
 constexpr auto glueBandMinDb = compressorMinDb;
 constexpr auto fullAmount = 100.0f;
 constexpr std::array<float, 7> delayDivisionBeats { 4.0f, 2.0f, 1.0f, 0.5f, 0.25f, 0.125f, 0.0625f };
@@ -88,7 +88,7 @@ constexpr std::array<const char*, 22> reverbModeLabels {
   "Cathedral", "Palace", "Chamber1979", "Hall1984"
 };
 constexpr std::array<const char*, 12> tuneKeyLabels {
-  "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
+  "C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"
 };
 constexpr std::array<const char*, 39> tuneScaleLabels {
   "Custom", "Major", "Minor", "Chromatic", "Natural Minor", "Harmonic Minor", "Melodic Minor",
@@ -196,12 +196,6 @@ juce::String tuneScaleLabel(float value, int)
                                                           juce::roundToInt(value)))];
 }
 
-juce::String tuneShiftLabel(float value, int)
-{
-  const auto rounded = juce::roundToInt(value);
-  return juce::String(rounded >= 0 ? "+" : "") + juce::String(rounded) + " st";
-}
-
 juce::String tuneCustomMaskLabel(float value, int)
 {
   return juce::String(juce::jlimit(0, 4095, juce::roundToInt(value)));
@@ -273,7 +267,6 @@ VoxanovaAudioProcessor::VoxanovaAudioProcessor()
   tuneKeyParam = parameters.getRawParameterValue(tuneKeyId);
   tuneScaleParam = parameters.getRawParameterValue(tuneScaleId);
   tuneCustomNotesParam = parameters.getRawParameterValue(tuneCustomNotesId);
-  tunePitchShiftParam = parameters.getRawParameterValue(tunePitchShiftId);
   peakEnabledParam = parameters.getRawParameterValue(peakEnabledId);
   peakThresholdParam = parameters.getRawParameterValue(peakThresholdId);
   glueEnabledParam = parameters.getRawParameterValue(glueEnabledId);
@@ -355,7 +348,6 @@ VoxanovaAudioProcessor::APVTS::ParameterLayout VoxanovaAudioProcessor::createPar
   addFloat(tuneScaleId, "Tune Scale", 0.0f, static_cast<float>(tuneScaleLabels.size() - 1), 1.0f, 1.0f,
            tuneScaleLabel);
   addFloat(tuneCustomNotesId, "Tune Custom Notes", 0.0f, 4095.0f, 1.0f, 4095.0f, tuneCustomMaskLabel);
-  addFloat(tunePitchShiftId, "Tune Pitch Shift", -24.0f, 24.0f, 1.0f, 0.0f, tuneShiftLabel);
   addBool(peakEnabledId, "Peak Tamer", true);
   addFloat(peakThresholdId, "Peak Tamer Threshold", compressorMinDb, compressorMaxDb, 0.1f, 0.0f, dbLabel);
   addBool(glueEnabledId, "Glue", true);
@@ -554,6 +546,11 @@ VoxanovaAudioProcessor::MeterSnapshot VoxanovaAudioProcessor::getMeterSnapshot()
   copyWaveform(gateOutputWaveform, snapshot.gateOutputWaveform, writeIndex);
   copySpectrum(preCompSpectrumAnalyzer.bins, snapshot.preCompSpectrum);
   copySpectrum(postCompSpectrumAnalyzer.bins, snapshot.postCompSpectrum);
+  for (auto band = 0u; band < snapshot.preEqDetectorDbs.size(); ++band)
+  {
+    snapshot.preEqDetectorDbs[band] = preEqDetectorDbMeters[band].load(std::memory_order_relaxed);
+    snapshot.postEqDetectorDbs[band] = postEqDetectorDbMeters[band].load(std::memory_order_relaxed);
+  }
 
   return snapshot;
 }
@@ -619,8 +616,7 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
     juce::jlimit(0.0f, 100.0f, tuneAmountParam->load()),
     juce::jlimit(0, static_cast<int>(tuneKeyLabels.size()) - 1, juce::roundToInt(tuneKeyParam->load())),
     juce::jlimit(0, static_cast<int>(tuneScaleLabels.size()) - 1, juce::roundToInt(tuneScaleParam->load())),
-    juce::jlimit(0, 4095, juce::roundToInt(tuneCustomNotesParam->load())),
-    juce::jlimit(-24.0f, 24.0f, tunePitchShiftParam->load())
+    juce::jlimit(0, 4095, juce::roundToInt(tuneCustomNotesParam->load()))
   };
   const auto peakEnabled = peakEnabledParam->load() >= 0.5f;
   const auto peakThreshold = peakThresholdParam->load();
@@ -1306,6 +1302,11 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
   const auto& preEqBands = eqSnapshot != nullptr ? eqSnapshot->preBands : emptyEqBands;
   const auto& postEqBands = eqSnapshot != nullptr ? eqSnapshot->postBands : emptyEqBands;
   const auto surferEqActive = eqBandsNeedPitchTracking(preEqBands) || eqBandsNeedPitchTracking(postEqBands);
+  for (auto& meter : preEqDetectorDbMeters)
+    meter.store(-120.0f, std::memory_order_relaxed);
+  for (auto& meter : postEqDetectorDbMeters)
+    meter.store(-120.0f, std::memory_order_relaxed);
+
   if (preEqBands.empty())
     resetEqStates(preEqStates);
   else
@@ -1342,7 +1343,7 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
     right = tuned.right;
 
     if (!preEqBands.empty())
-      applyEq(preEqStates, preEqBands, left, right);
+      applyEq(preEqStates, preEqBands, left, right, preEqDetectorDbMeters);
 
     pushSpectrumSample(preCompSpectrumAnalyzer, (left + right) * 0.5f);
 
@@ -1457,7 +1458,7 @@ void VoxanovaAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
     right = applySaturationModel(right, postSaturationMode, postSaturationAmount, postSaturationState, 1);
 
     if (!postEqBands.empty())
-      applyEq(postEqStates, postEqBands, left, right);
+      applyEq(postEqStates, postEqBands, left, right, postEqDetectorDbMeters);
 
     pushSpectrumSample(postCompSpectrumAnalyzer, (left + right) * 0.5f);
 
@@ -2438,6 +2439,10 @@ void VoxanovaAudioProcessor::clearMeters()
     meter.store(0.0f);
   for (auto& meter : glueBandReductionDbMeters)
     meter.store(0.0f);
+  for (auto& meter : preEqDetectorDbMeters)
+    meter.store(-120.0f);
+  for (auto& meter : postEqDetectorDbMeters)
+    meter.store(-120.0f);
 
   tuneFrequencyMeter.store(0.0f);
   tuneCentsMeter.store(0.0f);
@@ -2471,7 +2476,7 @@ bool VoxanovaAudioProcessor::eqBandHasEffect(const EqBandSettings& settings)
     case 8: // Band Pass
       return true;
     default:
-      return std::abs(settings.gainDb) > 0.01f || eqBandHasCompression(settings);
+      return std::abs(settings.gainDb) > 0.01f || eqBandHasCompressionTarget(settings);
   }
 }
 
@@ -2492,8 +2497,12 @@ bool VoxanovaAudioProcessor::eqBandSupportsCompression(const EqBandSettings& set
 
 bool VoxanovaAudioProcessor::eqBandHasCompression(const EqBandSettings& settings)
 {
-  return settings.enabled && eqBandSupportsCompression(settings) && settings.compEnabled &&
-         std::abs(settings.compDb - settings.gainDb) > 0.05f;
+  return eqBandHasCompressionTarget(settings) && settings.compEnabled;
+}
+
+bool VoxanovaAudioProcessor::eqBandHasCompressionTarget(const EqBandSettings& settings)
+{
+  return settings.enabled && eqBandSupportsCompression(settings) && std::abs(settings.compDb - settings.gainDb) > 0.05f;
 }
 
 bool VoxanovaAudioProcessor::eqBandsNeedPitchTracking(const std::vector<EqBandSettings>& settings)
@@ -2786,13 +2795,14 @@ void VoxanovaAudioProcessor::configureEqBandCompressionDetector(EqBandState& sta
   for (auto& detector : state.compDetectorFilters)
     detector.setBypass();
 
-  if (!eqBandHasCompression(settings))
+  if (!eqBandHasCompressionTarget(settings))
     return;
 
   const auto bandFrequency =
       settings.type == 1 && state.hasSurferFrequency ? state.surferFrequency : settings.frequency;
-  const auto detectorQ = settings.type == 1 ? juce::jlimit(0.1f, 50.0f, settings.q * 0.58f)
-                                            : juce::jlimit(0.1f, 50.0f, settings.q);
+  const auto detectorQ = settings.type == 1
+                             ? juce::jlimit(0.1f, 50.0f, settings.q * 0.58f)
+                             : juce::jlimit(0.35f, 50.0f, settings.q * 0.48f);
 
   for (auto& detector : state.compDetectorFilters)
   {
@@ -2867,16 +2877,13 @@ void VoxanovaAudioProcessor::prepareEq(std::vector<EqBandState>& states,
       states[index].reset();
 }
 
-float VoxanovaAudioProcessor::updateEqBandDynamicGain(EqBandState& state, const EqBandSettings& settings, float left,
-                                                      float right) const
+float VoxanovaAudioProcessor::updateEqBandDetectorLevel(EqBandState& state, const EqBandSettings& settings, float left,
+                                                        float right) const
 {
-  if (!eqBandHasCompression(settings))
-    return settings.gainDb;
-
-  if (!state.compGainInitialized)
+  if (!eqBandHasCompressionTarget(settings))
   {
-    state.compGainDb = settings.gainDb;
-    state.compGainInitialized = true;
+    state.compDetectorDb = -120.0f;
+    return state.compDetectorDb;
   }
 
   const auto detectorLeft = state.compDetectorFilters[0].process(left);
@@ -2893,8 +2900,36 @@ float VoxanovaAudioProcessor::updateEqBandDynamicGain(EqBandState& state, const 
           : std::exp(-1.0f / (safeRate * (detectorReleaseMs / 1000.0f)));
   state.compEnvelope = detector + detectorCoeff * (state.compEnvelope - detector);
 
-  const auto detectorDb = state.compEnvelope > 0.000001f ? juce::Decibels::gainToDecibels(state.compEnvelope)
-                                                         : -120.0f;
+  const auto detectorDb = state.compEnvelope > 0.000001f
+                              ? juce::jlimit(-120.0f, 24.0f,
+                                             juce::Decibels::gainToDecibels(state.compEnvelope) +
+                                                 eqDynamicDetectorCalibrationDb)
+                              : -120.0f;
+  state.compDetectorDb = detectorDb;
+
+  return detectorDb;
+}
+
+float VoxanovaAudioProcessor::updateEqBandDynamicGain(EqBandState& state, const EqBandSettings& settings, float left,
+                                                      float right) const
+{
+  if (!eqBandHasCompressionTarget(settings))
+    return settings.gainDb;
+
+  if (!state.compGainInitialized)
+  {
+    state.compGainDb = settings.gainDb;
+    state.compGainInitialized = true;
+  }
+
+  const auto detectorDb = updateEqBandDetectorLevel(state, settings, left, right);
+
+  if (!eqBandHasCompression(settings))
+  {
+    state.compGainDb = settings.gainDb;
+    return settings.gainDb;
+  }
+
   const auto overDb = juce::jmax(0.0f, detectorDb - settings.compThresholdDb);
   const auto kneeEngagement = thresholdEngagement(detectorDb, settings.compThresholdDb, 6.0f);
   const auto dynamicRangeDb = std::abs(settings.compDb - settings.gainDb);
@@ -2909,6 +2944,7 @@ float VoxanovaAudioProcessor::updateEqBandDynamicGain(EqBandState& state, const 
   const auto currentDepth = std::abs(state.compGainDb - settings.gainDb);
   const auto targetDepth = std::abs(targetGainDb - settings.gainDb);
   const auto gainTimeMs = targetDepth > currentDepth ? settings.compAttackMs : settings.compReleaseMs;
+  const auto safeRate = juce::jmax(1000.0f, static_cast<float>(currentSampleRate));
   const auto gainCoeff = std::exp(-1.0f / (safeRate * (juce::jmax(0.1f, gainTimeMs) / 1000.0f)));
   state.compGainDb = targetGainDb + gainCoeff * (state.compGainDb - targetGainDb);
 
@@ -2916,7 +2952,8 @@ float VoxanovaAudioProcessor::updateEqBandDynamicGain(EqBandState& state, const 
 }
 
 void VoxanovaAudioProcessor::applyEq(std::vector<EqBandState>& states, const std::vector<EqBandSettings>& settings,
-                                     float& left, float& right)
+                                     float& left, float& right,
+                                     std::array<std::atomic<float>, eqMeterBandCount>& detectorDbMeters)
 {
   const auto count = juce::jmin(states.size(), settings.size());
   const auto hasSolo = std::any_of(settings.begin(), settings.begin() + static_cast<std::ptrdiff_t>(count),
@@ -2939,8 +2976,12 @@ void VoxanovaAudioProcessor::applyEq(std::vector<EqBandState>& states, const std
       auto bandLeft = sourceLeft;
       auto bandRight = sourceRight;
 
-      if (eqBandHasCompression(band))
+      if (eqBandHasCompressionTarget(band))
+      {
         configureEqBandForGain(state, band, updateEqBandDynamicGain(state, band, sourceLeft, sourceRight));
+        if (index < detectorDbMeters.size())
+          detectorDbMeters[index].store(state.compDetectorDb, std::memory_order_relaxed);
+      }
 
       const auto eqStageCount = (band.type == 3 || band.type == 4) ? eqFilterStageCount(band.slopeDb) : 1;
       for (auto stage = 0; stage < eqStageCount; ++stage)
@@ -2974,8 +3015,12 @@ void VoxanovaAudioProcessor::applyEq(std::vector<EqBandState>& states, const std
     if (band.type == 2)
       continue;
 
-    if (eqBandHasCompression(band))
+    if (eqBandHasCompressionTarget(band))
+    {
       configureEqBandForGain(state, band, updateEqBandDynamicGain(state, band, left, right));
+      if (index < detectorDbMeters.size())
+        detectorDbMeters[index].store(state.compDetectorDb, std::memory_order_relaxed);
+    }
 
     const auto stageCount = (band.type == 3 || band.type == 4) ? eqFilterStageCount(band.slopeDb) : 1;
     for (auto stage = 0; stage < stageCount; ++stage)

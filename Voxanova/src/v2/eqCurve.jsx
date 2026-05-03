@@ -8,7 +8,7 @@ const DEFAULT_EQ_Q = 5;
 const DEFAULT_EQ_SHELF_Q = 1.3;
 const DEFAULT_EQ_LOW_CUT_SLOPE = 30;
 
-function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, setMode, showWaveform = true, scale = 12, scaleOpen, setScaleOpen, scaleOptions, setScale, scaleRef, saturation = { mode: 0, amount: 0 }, onSaturationChange, detectedFrequency = 0, spectrumData = [], graphHeight = 320 }) {
+function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, setMode, showWaveform = true, scale = 12, scaleOpen, setScaleOpen, scaleOptions, setScale, scaleRef, saturation = { mode: 0, amount: 0 }, onSaturationChange, detectedFrequency = 0, spectrumData = [], detectorData = [], graphHeight = 320 }) {
   const W = 1296;
   const targetGraphHeight = Math.max(280, Math.min(430, Number(graphHeight) || 320));
   const [displayGraphHeight, setDisplayGraphHeight] = React.useState(targetGraphHeight);
@@ -1100,6 +1100,14 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
       ? spectrumData.map((value) => clamp(Number(value) || 0, 0, 1))
       : []
   ), [spectrumData]);
+  const inputDetectorDbs = React.useMemo(() => (
+    Array.isArray(detectorData)
+      ? detectorData.map((value) => {
+        const numeric = Number(value);
+        return Number.isFinite(numeric) ? clamp(numeric, -120, 24) : -120;
+      })
+      : []
+  ), [detectorData]);
 
   const spectrumShape = React.useMemo(() => {
     if (inputSpectrum.length < 2 || inputSpectrum.every((value) => value <= 0.002)) {
@@ -1186,7 +1194,12 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
   const activeBandHasComp = Boolean(activeBand && bandHasDynamics(activeBand));
   const activeBandCompPanelVisible = activeBandSupportsComp && activeBandHasCompTarget;
   const activeBandDynamicsMode = activeBandCompPanelVisible && (Number(activeBand.comp) || 0) > (Number(activeBand.gain) || 0) ? 'EXP' : 'COMP';
-  const spectrumValueToDb = (value) => clamp(Number(value) || 0, 0, 1) * 60 - 78;
+  const spectrumValueToDb = (value) => clamp(Number(value) || 0, 0, 1) * 60 - 66;
+  const detectorDbAt = (index) => {
+    if (!Number.isInteger(index) || index < 0 || index >= inputDetectorDbs.length) return undefined;
+    const value = inputDetectorDbs[index];
+    return Number.isFinite(value) ? value : undefined;
+  };
   const thresholdKneeEngagement = (levelDb, thresholdDb, kneeDb = 6) => {
     if (levelDb <= thresholdDb - kneeDb * 0.5) return 0;
     if (levelDb >= thresholdDb + kneeDb * 0.5) return 1;
@@ -1221,26 +1234,32 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
 
     return peak;
   };
-  const getBandDynamicEngagement = (band, visualBand = band) => {
+  const getBandDetectorDb = (band, visualBand = band, index = undefined) => {
+    const detectorDb = detectorDbAt(index);
+    return Number.isFinite(detectorDb) ? detectorDb : spectrumValueToDb(getBandSpectrumPeak(band, visualBand));
+  };
+  const getBandDynamicEngagement = (band, visualBand = band, detectorDbOverride = undefined) => {
     if (!bandHasDynamics(band)) return 0;
 
     const dynamicRangeDb = Math.abs((Number(band.comp) || 0) - (Number(band.gain) || 0));
     if (dynamicRangeDb <= 0.05) return 0;
 
-    const detectorDb = spectrumValueToDb(getBandSpectrumPeak(band, visualBand));
+    const detectorDb = Number.isFinite(detectorDbOverride)
+      ? detectorDbOverride
+      : getBandDetectorDb(band, visualBand);
     const overDb = Math.max(0, detectorDb - (Number(band.compThreshold) || -18));
     const ratio = clamp(Number(band.compRatio) || 4, EQ_COMP_RATIO_MIN, EQ_COMP_RATIO_MAX);
     const ratioMoveDb = overDb * (1 - 1 / ratio);
     const ratioEngagement = clamp(ratioMoveDb / dynamicRangeDb, 0, 1);
     return clamp(thresholdKneeEngagement(detectorDb, Number(band.compThreshold) || -18) * ratioEngagement, 0, 1);
   };
-  const activeCompAudioLevel = activeBandHasComp
-    ? getBandDynamicEngagement(activeBand, activeDisplayBand)
-    : 0;
-  const withVisualDynamicGain = (visualPoint, sourcePoint = visualPoint) => {
+  const activeBandDetectorDb = activeBandCompPanelVisible
+    ? getBandDetectorDb(activeBand, activeDisplayBand, activeIdx)
+    : -120;
+  const withVisualDynamicGain = (visualPoint, sourcePoint = visualPoint, detectorDbOverride = undefined) => {
     const visualBand = withBandDefaults(visualPoint);
     const sourceBand = withBandDefaults(sourcePoint);
-    const amount = getBandDynamicEngagement(sourceBand, visualBand);
+    const amount = getBandDynamicEngagement(sourceBand, visualBand, detectorDbOverride);
     if (amount <= 0.003) return visualBand;
 
     return {
@@ -1248,14 +1267,20 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
       gain: sourceBand.gain + (sourceBand.comp - sourceBand.gain) * amount
     };
   };
-  const preDynamicDisplayPoints = preDisplayPoints.map((point, index) => withVisualDynamicGain(point, prePoints[index] || point));
-  const postDynamicDisplayPoints = postDisplayPoints.map((point, index) => withVisualDynamicGain(point, postPoints[index] || point));
+  const preDynamicDisplayPoints = preDisplayPoints.map((point, index) => (
+    withVisualDynamicGain(point, prePoints[index] || point, mode === 'pre' ? detectorDbAt(index) : undefined)
+  ));
+  const postDynamicDisplayPoints = postDisplayPoints.map((point, index) => (
+    withVisualDynamicGain(point, postPoints[index] || point, mode === 'post' ? detectorDbAt(index) : undefined)
+  ));
   const dynamicDisplayPoints = mode === 'pre' ? preDynamicDisplayPoints : postDynamicDisplayPoints;
   const postCurve = buildSampledCurve(postDynamicDisplayPoints);
   const preCurve = buildSampledCurve(preDynamicDisplayPoints);
   const activeCurve = mode === 'pre' ? preCurve : postCurve;
   const activeCurveFill = `${activeCurve} L ${padL + innerW} ${baseY} L ${padL} ${baseY} Z`;
-  const compAudioFill = activeBandHasComp ? `${Math.round(activeCompAudioLevel * 100)}%` : '0%';
+  const compInputFill = activeBandCompPanelVisible
+    ? `${Math.round(clamp((activeBandDetectorDb - EQ_COMP_THRESHOLD_MIN) / (EQ_COMP_THRESHOLD_MAX - EQ_COMP_THRESHOLD_MIN), 0, 1) * 100)}%`
+    : '0%';
   const setActiveCompThreshold = (event) => {
     if (!activeBandCompPanelVisible) return;
     const compThreshold = Number(clamp(Number(event.target.value), EQ_COMP_THRESHOLD_MIN, EQ_COMP_THRESHOLD_MAX).toFixed(1));
@@ -1558,7 +1583,8 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
             const color = bandColor(points, i);
             const isActive = activeIdx === i;
             const source = withBandDefaults(points[i] || p);
-            const isDynamic = bandHasDynamics(source) && getBandDynamicEngagement(source, withBandDefaults(p)) > 0.003;
+            const detectorDb = detectorDbAt(i);
+            const isDynamic = bandHasDynamics(source) && getBandDynamicEngagement(source, withBandDefaults(p), detectorDb) > 0.003;
             return (
               <g key={`band-${i}`}>
                 {!isCut && fill && (
@@ -1592,7 +1618,8 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
             const pointHasDynamics = bandHasDynamics(source);
             const mirror = buildCompMirrorCurve(visualBand, includeMuted);
             if (!mirror.active) return null;
-            const motion = buildCompMotionCurve(visualBand, getBandDynamicEngagement(source, visualBand));
+            const detectorDb = detectorDbAt(i);
+            const motion = buildCompMotionCurve(visualBand, getBandDynamicEngagement(source, visualBand, detectorDb));
             return (
               <g key={`comp-mirror-${i}`} pointerEvents="none">
                 <path d={mirror.fill} fill={`url(#${compMirrorFillId(i)})`} opacity={pointHasDynamics ? (isActive ? 0.44 : 0.26) : 0.20} />
@@ -1910,7 +1937,7 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
           {activeBandCompPanelVisible && (
             <div
               className={`eq-comp-panel ${activeBandDynamicsMode.toLowerCase()}${activeBandHasComp ? '' : ' muted'}`}
-              style={{ '--eq-comp-audio-fill': activeBandHasComp ? compAudioFill : '0%' }}
+              style={{ '--eq-comp-audio-fill': compInputFill }}
             >
               <button
                 type="button"

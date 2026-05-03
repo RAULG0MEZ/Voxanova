@@ -15,7 +15,6 @@ public:
     int key = 0;
     int scale = 0;
     int customMask = 0;
-    float pitchShiftSemitones = 0.0f;
   };
 
   struct Result
@@ -87,8 +86,11 @@ private:
   float pitchRatio = 1.0f;
   float correctionFilter = 0.12f;
   float correctionGain = 1.0f;
-  float correctionOffsetSemitones = 0.0f;
+  float correctionOvershoot = 1.0f;
   float noteBias = 0.038f;
+  float detectorFollowFast = 0.45f;
+  float detectorFollowSlow = 0.28f;
+  int analysisIntervalFragments = 4;
   int lastNote = -1;
   int detectedNoteBits = 0;
   int unvoicedCounter = 5;

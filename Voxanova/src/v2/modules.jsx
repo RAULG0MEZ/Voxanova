@@ -608,6 +608,38 @@ function DesserBand({ low, high, amount = 0, spectrum = [], onLowChange, onHighC
       .sort((a, b) => a.freq - b.freq);
   }, [active, amountNorm, high, low, spectrum]);
 
+  const dragBand = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const track = trackRef.current;
+    if (!track) return;
+
+    const r = track.getBoundingClientRect();
+    const startX = e.clientX;
+    const startLow = Math.max(min, Math.min(max - DESSER_MIN_GAP, Number(low) || min));
+    const startHigh = Math.min(max, Math.max(startLow + DESSER_MIN_GAP, Number(high) || max));
+    const bandWidth = startHigh - startLow;
+    const hzPerPx = (max - min) / Math.max(1, r.width);
+
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+
+    const update = (ev) => {
+      const deltaHz = (ev.clientX - startX) * hzPerPx;
+      const nextLow = Math.max(min, Math.min(max - bandWidth, Math.round(startLow + deltaHz)));
+      onLowChange(nextLow);
+      onHighChange(nextLow + bandWidth);
+    };
+
+    update(e);
+    const move = ev => update(ev);
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
+
   const dragThumb = (which) => (e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -659,6 +691,8 @@ function DesserBand({ low, high, amount = 0, spectrum = [], onLowChange, onHighC
         <div
           className="desser-band-region"
           style={{ left: `${lowNorm * 100}%`, width: `${Math.max(0, highNorm - lowNorm) * 100}%` }}
+          onPointerDown={dragBand}
+          title="Move de-esser band"
         />
         <button
           type="button"

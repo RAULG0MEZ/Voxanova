@@ -20,11 +20,6 @@ function notesToMask(notes) {
   ), 0);
 }
 
-function formatPitchShift(value) {
-  const rounded = Math.round(value || 0);
-  return `${rounded > 0 ? '+' : ''}${rounded}`;
-}
-
 function formatRetunePitch(value) {
   const amount = Math.max(0, Math.min(1, Number(value || 0) / 100));
   if (amount >= 0.985) return 'HARD';
@@ -35,15 +30,15 @@ function formatRetunePitch(value) {
 
 function retuneVisualTiming(value) {
   const amount = Math.max(0, Math.min(1, Number(value || 0) / 100));
-  const slowProgress = Math.pow(1 - amount, 1.55);
-  const markerMs = Math.round(42 + slowProgress * 520);
+  const slowProgress = Math.pow(1 - amount, 1.35);
+  const markerMs = Math.round(145 + slowProgress * 655);
 
   return {
     markerMs,
   };
 }
 
-function AutoTunePitchViz({ active, amount, key_, pitchShift, setPitchShift, disabled, livePitch }) {
+function AutoTunePitchViz({ active, amount, key_, livePitch }) {
   const livePitchActive = active && Number(livePitch?.confidence) > 1;
   const retuneTiming = React.useMemo(() => retuneVisualTiming(amount), [amount]);
 
@@ -76,41 +71,14 @@ function AutoTunePitchViz({ active, amount, key_, pitchShift, setPitchShift, dis
   const signalVisible = active && livePitchActive;
   const cents = signalVisible ? Math.round(displayPitch.cents) : 0;
   const marker = signalVisible ? Math.max(-42, Math.min(42, cents * 1.4)) : 0;
-  const pitchSemis = Math.round(pitchShift || 0);
-  const dragPitch = (e) => {
-    if (disabled) return;
-    e.preventDefault();
-    const target = e.currentTarget;
-    const startY = e.clientY;
-    const startValue = pitchSemis;
-    target.setPointerCapture(e.pointerId);
-    const update = (ev) => {
-      const next = startValue + Math.round((startY - ev.clientY) / 5);
-      setPitchShift(Math.max(-24, Math.min(24, next)));
-    };
-    update(e);
-    const move = ev => update(ev);
-    const up = () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
-  };
 
   return (
     <div className={`at-pitch-viz${!active || !livePitchActive ? ' idle' : ''}`}>
       <div className="at-pitch-grid" />
-      <button
-        type="button"
-        className="at-pitch-shift"
-        onPointerDown={dragPitch}
-        onDoubleClick={() => !disabled && setPitchShift(0)}
-        disabled={disabled}
-      >
+      <div className="at-pitch-shift" aria-hidden="true">
         <span>PITCH</span>
-        <b>{formatPitchShift(pitchSemis)}</b>
-      </button>
+        <b>+0</b>
+      </div>
       <div className="at-pitch-main">
         <span className="at-pitch-note">
           {signalVisible ? displayPitch.note : '--'}<small>{signalVisible ? displayPitch.octave : ''}</small>
@@ -167,8 +135,6 @@ function AutoTuneModule({
   setScale,
   customMask,
   setCustomMask,
-  pitchShift,
-  setPitchShift,
   on,
   setOn,
   signalActive,
@@ -202,9 +168,6 @@ function AutoTuneModule({
         active={active}
         amount={amount}
         key_={key_}
-        pitchShift={pitchShift}
-        setPitchShift={setPitchShift}
-        disabled={!on}
         livePitch={livePitch}
       />
       <div className="at-body">

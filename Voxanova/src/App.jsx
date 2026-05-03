@@ -174,6 +174,7 @@ function presetIndex(labels, label) {
 
 const makeEmptyWaveform = () => Array.from({ length: 256 }, () => 0);
 const makeEmptySpectrum = () => Array.from({ length: 256 }, () => 0);
+const makeEmptyEqDetectorDb = () => Array.from({ length: 128 }, () => -120);
 
 const emptyMeters = {
   inputLevel: 0,
@@ -191,6 +192,8 @@ const emptyMeters = {
   inputSpectrum: makeEmptySpectrum(),
   preCompSpectrum: makeEmptySpectrum(),
   postCompSpectrum: makeEmptySpectrum(),
+  preEqDetectorDb: makeEmptyEqDetectorDb(),
+  postEqDetectorDb: makeEmptyEqDetectorDb(),
   gateReduction: 0,
   peakReduction: 0,
   glueReduction: 0,
@@ -226,6 +229,14 @@ function fadeMeterArray(values, fallbackLength = 0, factor = 0.72, floor = 0.000
   return source.map((value) => fadeMeterValue(value, factor, floor));
 }
 
+function fadeDetectorDbArray(values, fallbackLength = 0, factor = 0.76) {
+  const source = Array.isArray(values) ? values : Array.from({ length: fallbackLength }, () => -120);
+  return source.map((value) => {
+    const next = -120 + (numberOrZero(value) + 120) * factor;
+    return next <= -119.5 ? -120 : next;
+  });
+}
+
 function metersFromPayload(current, payload) {
   const arrayFromPayload = (id) => (
     Array.isArray(payload[id]) ? payload[id].map(numberOrZero) : current[id]
@@ -256,6 +267,12 @@ function metersFromPayload(current, payload) {
       postCompSpectrum: meterStale
         ? fadeMeterArray(current.postCompSpectrum, 256, 0.92, 0.0008)
         : arrayFromPayload("postCompSpectrum"),
+      preEqDetectorDb: meterStale
+        ? fadeDetectorDbArray(current.preEqDetectorDb, 128)
+        : arrayFromPayload("preEqDetectorDb"),
+      postEqDetectorDb: meterStale
+        ? fadeDetectorDbArray(current.postEqDetectorDb, 128)
+        : arrayFromPayload("postEqDetectorDb"),
       gateReduction: fadeMeterValue(current.gateReduction, 0.58, 0.001),
       peakReduction: fadeMeterValue(current.peakReduction, 0.58, 0.001),
       glueReduction: fadeMeterValue(current.glueReduction, 0.58, 0.001),
@@ -293,6 +310,8 @@ function metersFromPayload(current, payload) {
     inputSpectrum: arrayFromPayload("inputSpectrum"),
     preCompSpectrum: arrayFromPayload("preCompSpectrum"),
     postCompSpectrum: arrayFromPayload("postCompSpectrum"),
+    preEqDetectorDb: arrayFromPayload("preEqDetectorDb"),
+    postEqDetectorDb: arrayFromPayload("postEqDetectorDb"),
     gateReduction: numberOrZero(payload.gateGr),
     peakReduction: numberOrZero(payload.peakGr),
     glueReduction: numberOrZero(payload.glueGr),
@@ -1000,13 +1019,11 @@ function App() {
   const atKey = autoTuneNotes[clamp(Math.round(values.tuneKey), 0, autoTuneNotes.length - 1)] || 'C';
   const atScale = autoTuneScales[clamp(Math.round(values.tuneScale), 0, autoTuneScales.length - 1)] || 'MAJ';
   const atCustomMask = values.tuneCustomNotes;
-  const atPitchShift = values.tunePitchShift;
   const setAtOn = useCallback((value) => setParam("tuneEnabled", value), [setParam]);
   const setAtAmount = useCallback((value) => setParam("tuneAmount", value), [setParam]);
   const setAtKey = useCallback((value) => setParam("tuneKey", presetIndex(autoTuneNotes, value)), [setParam]);
   const setAtScale = useCallback((value) => setParam("tuneScale", presetIndex(autoTuneScales, value)), [setParam]);
   const setAtCustomMask = useCallback((value) => setParam("tuneCustomNotes", value), [setParam]);
-  const setAtPitchShift = useCallback((value) => setParam("tunePitchShift", value), [setParam]);
   const liveTunePitch = useMemo(() => ({
     frequency: meters.tuneFrequency,
     cents: meters.tuneCents,
@@ -1184,6 +1201,7 @@ function App() {
           onSaturationChange={setActiveEqSaturation}
           detectedFrequency={meters.tuneFrequency}
           spectrumData={eqMode === 'pre' ? meters.preCompSpectrum : meters.postCompSpectrum}
+          detectorData={eqMode === 'pre' ? meters.preEqDetectorDb : meters.postEqDetectorDb}
           graphHeight={eqGraphHeight}
         />
       </div>
@@ -1256,7 +1274,6 @@ function App() {
             key_={atKey} setKey={setAtKey}
             scale_={atScale} setScale={setAtScale}
             customMask={atCustomMask} setCustomMask={setAtCustomMask}
-            pitchShift={atPitchShift} setPitchShift={setAtPitchShift}
             on={atOn} setOn={setAtOn}
             signalActive={tweaks.signalActive}
             livePitch={liveTunePitch}

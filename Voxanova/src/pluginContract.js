@@ -45,7 +45,6 @@ export const defaultValues = {
   tuneKey: 0,
   tuneScale: 1,
   tuneCustomNotes: 4095,
-  tunePitchShift: 0,
   peakEnabled: true,
   peakThreshold: 0,
   glueEnabled: true,
@@ -94,7 +93,7 @@ export const defaultValues = {
 };
 
 export const saturationModes = ["Off", "1073", "Tape", "Tube"];
-export const autoTuneNotes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+export const autoTuneNotes = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
 export const autoTuneScales = [
   'CUSTOM',
   'MAJ',
