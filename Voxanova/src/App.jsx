@@ -533,7 +533,87 @@ function ThemeMenu({ themeId, onSelect, signalActive, onToggleSignal, showWavefo
   );
 }
 
-function PresetMenu({ current, onSelect, onClose }) {
+function useUserPresets() {
+  const [presets, setPresets] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('voxanova-user-presets') || '[]');
+    } catch {
+      return [];
+    }
+  });
+
+  const savePreset = useCallback((name, data) => {
+    const preset = { id: Date.now().toString(), name, savedAt: Date.now(), ...data };
+    setPresets((current) => {
+      const next = [...current, preset];
+      localStorage.setItem('voxanova-user-presets', JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  const deletePreset = useCallback((id) => {
+    setPresets((current) => {
+      const next = current.filter((p) => p.id !== id);
+      localStorage.setItem('voxanova-user-presets', JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  return { presets, savePreset, deletePreset };
+}
+
+function SavePresetModal({ onSave, onClose }) {
+  const [name, setName] = useState('');
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    onSave(trimmed);
+    onClose();
+  };
+
+  return (
+    <div className="plugin-info-backdrop" onMouseDown={onClose}>
+      <section className="save-preset-modal" role="dialog" aria-modal="true" aria-label="Save preset" onMouseDown={(e) => e.stopPropagation()}>
+        <button type="button" className="plugin-info-close" aria-label="Close" onClick={onClose}>
+          <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+            <path d="M3 3l6 6M9 3L3 9" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+          </svg>
+        </button>
+        <div className="save-preset-title">Save Preset</div>
+        <div className="save-preset-sub">Name your configuration to recall it later</div>
+        <form onSubmit={handleSubmit} className="save-preset-form">
+          <input
+            ref={inputRef}
+            className="save-preset-input"
+            type="text"
+            placeholder="Preset name…"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            maxLength={48}
+            autoComplete="off"
+            spellCheck={false}
+          />
+          <div className="save-preset-actions">
+            <button type="button" className="save-preset-btn cancel" onClick={onClose}>Cancel</button>
+            <button type="submit" className="save-preset-btn confirm" disabled={!name.trim()}>Save</button>
+          </div>
+        </form>
+      </section>
+    </div>
+  );
+}
+
+function PresetMenu({ current, onSelect, onClose, userPresets, onDeleteUserPreset, onSelectUserPreset }) {
   const ref = useRef(null);
 
   useEffect(() => {
@@ -549,6 +629,34 @@ function PresetMenu({ current, onSelect, onClose }) {
 
   return (
     <div className="preset-menu" ref={ref} role="menu">
+      {userPresets.length > 0 && (
+        <div className="preset-menu-section">
+          <div className="preset-menu-label">My Presets</div>
+          <div className="preset-menu-options preset-menu-options-user">
+            {userPresets.map((preset) => (
+              <div key={preset.id} className="preset-menu-user-row">
+                <button
+                  type="button"
+                  className="preset-menu-option preset-menu-option-user"
+                  onClick={() => { onSelectUserPreset(preset); onClose(); }}
+                >
+                  <span>{preset.name}</span>
+                </button>
+                <button
+                  type="button"
+                  className="preset-menu-delete"
+                  aria-label={`Delete preset ${preset.name}`}
+                  onClick={(e) => { e.stopPropagation(); onDeleteUserPreset(preset.id); }}
+                >
+                  <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true">
+                    <path d="M1.5 1.5l5 5M6.5 1.5l-5 5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+                  </svg>
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {PRESET_CATEGORIES.map((category) => (
         <div className="preset-menu-section" key={category.label}>
           <div className="preset-menu-label">{category.label}</div>
@@ -1111,6 +1219,7 @@ function App() {
 
   const [presetIdx, setPresetIdx] = useState(0);
   const [presetOpen, setPresetOpen] = useState(false);
+  const [savePresetOpen, setSavePresetOpen] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
   const [ab, setAb] = useState('A');
   const activePreset = FLAT_PRESETS[presetIdx]?.name || 'Default';
@@ -1118,6 +1227,28 @@ function App() {
     const index = FLAT_PRESETS.findIndex((preset) => preset.name === name);
     if (index >= 0) setPresetIdx(index);
   }, []);
+
+  const { presets: userPresets, savePreset, deletePreset } = useUserPresets();
+
+  const handleSavePreset = useCallback((name) => {
+    savePreset(name, {
+      values,
+      eqPrePoints,
+      eqPostPoints,
+    });
+  }, [savePreset, values, eqPrePoints, eqPostPoints]);
+
+  const handleLoadUserPreset = useCallback((preset) => {
+    setValues(preset.values);
+    setEqPrePointsFromUi(normalizeEqPoints(preset.eqPrePoints || []));
+    setEqPostPointsFromUi(normalizeEqPoints(preset.eqPostPoints || []));
+    Object.keys(defaultValues).forEach((id) => {
+      if (typeof preset.values[id] !== 'undefined') {
+        const value = preset.values[id];
+        sendNativeParameter(id, booleanParameterSet.has(id) ? (value ? 1 : 0) : value);
+      }
+    });
+  }, [setEqPrePointsFromUi, setEqPostPointsFromUi]);
 
   return (
     <div className="plugin-frame">
@@ -1146,23 +1277,39 @@ function App() {
         </div>
         <div className="preset-center">
           <div className="preset-wrap">
-            <button
-              type="button"
-              className={`preset-bar${presetOpen ? ' open' : ''}`}
-              aria-haspopup="menu"
-              aria-expanded={presetOpen}
-              onClick={() => setPresetOpen((open) => !open)}
-            >
-              <span className="preset-name">{activePreset}</span>
-              <svg className="preset-chevron" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-                <path d="M2 4l3 3 3-3" stroke="currentColor" strokeWidth="1.3" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-            </button>
+            <div className="preset-bar-row">
+              <button
+                type="button"
+                className={`preset-bar${presetOpen ? ' open' : ''}`}
+                aria-haspopup="menu"
+                aria-expanded={presetOpen}
+                onClick={() => setPresetOpen((open) => !open)}
+              >
+                <span className="preset-name">{activePreset}</span>
+                <svg className="preset-chevron" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+                  <path d="M2 4l3 3 3-3" stroke="currentColor" strokeWidth="1.3" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </button>
+              <button
+                type="button"
+                className="preset-save-btn"
+                aria-label="Save current settings as preset"
+                title="Save preset"
+                onClick={() => { setPresetOpen(false); setSavePresetOpen(true); }}
+              >
+                <svg width="11" height="11" viewBox="0 0 11 11" aria-hidden="true">
+                  <path d="M5.5 1v9M1 5.5h9" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                </svg>
+              </button>
+            </div>
             {presetOpen && (
               <PresetMenu
                 current={activePreset}
                 onSelect={selectPreset}
                 onClose={() => setPresetOpen(false)}
+                userPresets={userPresets}
+                onDeleteUserPreset={deletePreset}
+                onSelectUserPreset={handleLoadUserPreset}
               />
             )}
           </div>
@@ -1202,6 +1349,7 @@ function App() {
         </div>
       </div>
       {infoOpen && <PluginInfoModal nativeOnline={nativeOnline} onClose={() => setInfoOpen(false)} />}
+      {savePresetOpen && <SavePresetModal onSave={handleSavePreset} onClose={() => setSavePresetOpen(false)} />}
 
       {/* ── EQ ── */}
       <div className="eq-section" onPointerMove={() => setLayoutFocus('eq')}>
