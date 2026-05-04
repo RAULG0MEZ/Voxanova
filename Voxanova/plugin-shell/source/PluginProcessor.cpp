@@ -81,6 +81,14 @@ constexpr std::array<const char*, 11> delayStyleLabels {
 [[maybe_unused]] constexpr std::array<const char*, 9> eqFilterTypeLabels {
   "Bell", "Surfer Bell", "Desser", "Low Cut", "High Cut", "Low Shelf", "High Shelf", "Notch", "Band Pass"
 };
+std::array<float, 2> getSurferTrackingWindow(float anchorFrequency, float maxFrequency)
+{
+  const auto anchor = juce::jlimit(20.0f, maxFrequency, anchorFrequency);
+  return {
+    juce::jlimit(20.0f, maxFrequency, anchor * 0.5f),
+    juce::jlimit(20.0f, maxFrequency, anchor * 1.5f)
+  };
+}
 constexpr std::array<const char*, 22> reverbModeLabels {
   "Concert Hall", "Bright Hall", "Plate", "Room", "Chamber", "Random Space", "Chorus Space",
   "Ambience", "Sanctuary", "Dirty Hall", "Dirty Plate", "Smooth Plate", "Smooth Room",
@@ -2646,14 +2654,18 @@ void VoxanovaAudioProcessor::setBandPassFilter(EqFilterStage& stage, float frequ
 
 float VoxanovaAudioProcessor::getSurferEqFrequency(EqBandState& state, const EqBandSettings& settings) const
 {
-  auto targetFrequency = juce::jlimit(20.0f, static_cast<float>(currentSampleRate) * 0.45f, settings.frequency);
+  const auto maxEqFrequency = juce::jmax(20.0f, static_cast<float>(currentSampleRate) * 0.45f);
+  auto targetFrequency = juce::jlimit(20.0f, maxEqFrequency, settings.frequency);
   const auto detectedFrequency = tuneEngine.getDetectedFrequency();
   const auto detectorReady = detectedFrequency >= 55.0f && tuneEngine.getDetectedClarity() >= 0.58f;
+  const auto staticFrequencyChanged = std::abs(settings.frequency - state.previousStaticFrequency) > 0.5f;
+
+  if (!detectorReady && staticFrequencyChanged)
+    state.hasSurferRatio = false;
 
   if (detectorReady)
   {
     const auto explicitRatio = settings.surfRatio > 0.0001f;
-    const auto staticFrequencyChanged = std::abs(settings.frequency - state.previousStaticFrequency) > 0.5f;
 
     if (explicitRatio)
     {
@@ -2667,12 +2679,22 @@ float VoxanovaAudioProcessor::getSurferEqFrequency(EqBandState& state, const EqB
     }
 
     if (state.hasSurferRatio)
-      targetFrequency =
-          juce::jlimit(20.0f, static_cast<float>(currentSampleRate) * 0.45f,
-                       detectedFrequency * state.surferRatio);
+    {
+      const auto trackedFrequency = juce::jlimit(20.0f, maxEqFrequency, detectedFrequency * state.surferRatio);
+      const auto trackingWindow = getSurferTrackingWindow(settings.frequency, maxEqFrequency);
+      targetFrequency = trackedFrequency >= trackingWindow[0] && trackedFrequency <= trackingWindow[1]
+                            ? trackedFrequency
+                            : juce::jlimit(20.0f, maxEqFrequency, settings.frequency);
+    }
   }
 
   state.previousStaticFrequency = settings.frequency;
+
+  if (!detectorReady)
+  {
+    state.surferFrequency = targetFrequency;
+    return state.surferFrequency;
+  }
 
   if (!state.hasSurferFrequency)
   {

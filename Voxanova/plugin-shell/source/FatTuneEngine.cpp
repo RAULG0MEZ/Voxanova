@@ -153,9 +153,17 @@ void FatTuneEngine::prepare(double nextSampleRate, int samplesPerBlock)
       1.0f - std::exp(-2.0f * juce::MathConstants<float>::pi * 1800.0f / static_cast<float>(sampleRate));
   shiftedBlendAttackAlpha = 1.0f - std::exp(-1.0f / static_cast<float>(0.0060 * sampleRate));
   shiftedBlendReleaseAlpha = 1.0f - std::exp(-1.0f / static_cast<float>(0.0025 * sampleRate));
+  formantPreserveAlpha = 1.0f - std::exp(-1.0f / static_cast<float>(0.0080 * sampleRate));
+  formantLowpassAlpha =
+      1.0f - std::exp(-2.0f * juce::MathConstants<float>::pi * 220.0f / static_cast<float>(sampleRate));
+  formantHighpassAlpha =
+      1.0f - std::exp(-2.0f * juce::MathConstants<float>::pi * 3600.0f / static_cast<float>(sampleRate));
   highPreserveAlpha = 1.0f - std::exp(-1.0f / static_cast<float>(0.0040 * sampleRate));
   highGuardLowpassAlpha =
       1.0f - std::exp(-2.0f * juce::MathConstants<float>::pi * 4700.0f / static_cast<float>(sampleRate));
+  airBoostAlpha = 1.0f - std::exp(-1.0f / static_cast<float>(0.0100 * sampleRate));
+  airBoostLowpassAlpha =
+      1.0f - std::exp(-2.0f * juce::MathConstants<float>::pi * 4200.0f / static_cast<float>(sampleRate));
   reset();
 }
 
@@ -230,10 +238,19 @@ void FatTuneEngine::reset()
   voiced = false;
   shiftedBlend = 0.0f;
   shiftedBlendTarget = 0.0f;
+  formantPreserveMix = 0.0f;
+  formantPreserveTarget = 0.0f;
   highPreserveMix = 0.35f;
   highPreserveTarget = 0.35f;
+  airBoostGain = 0.0f;
+  airBoostTarget = 0.0f;
+  shiftedFormantLowpass.fill(0.0f);
+  shiftedFormantHighpass.fill(0.0f);
+  delayFormantLowpass.fill(0.0f);
+  delayFormantHighpass.fill(0.0f);
   shiftedHighGuardLowpass.fill(0.0f);
   delayHighGuardLowpass.fill(0.0f);
+  airBoostLowpass.fill(0.0f);
 
   detectorWriteIndex = 0;
   detectorDecimationCounter = 0;
@@ -329,13 +346,13 @@ void FatTuneEngine::configureCorrection(const Settings& settings)
   correctionFilter += (1.0f - correctionFilter) * tuneLockStrength * 0.88f;
   correctionGain = settings.enabled ? 1.0f : 0.0f;
   correctionOvershoot = 1.0f;
-  noteSwitchMarginOctaves = (22.0f - tuneLockStrength * 15.0f) / 1200.0f;
-  noteReleaseOctaves = (88.0f - tuneLockStrength * 32.0f) / 1200.0f;
+  noteSwitchMarginOctaves = (28.0f - tuneLockStrength * 12.0f) / 1200.0f;
+  noteReleaseOctaves = (92.0f - tuneLockStrength * 24.0f) / 1200.0f;
   const auto maxTransitionFollow = 0.42f + tuneLockStrength * 0.58f;
   noteTransitionFilter =
       juce::jlimit(0.10f, maxTransitionFollow, correctionFilter * (1.18f + pitchLock * 0.38f));
   noteTransitionFilter += (1.0f - noteTransitionFilter) * tuneLockStrength * 0.78f;
-  noteSelectFollow = juce::jlimit(0.08f, 0.55f, 0.13f + tuneLockStrength * 0.34f);
+  noteSelectFollow = juce::jlimit(0.08f, 0.24f, 0.11f + tuneLockStrength * 0.13f);
   correctionMidiFollowFast =
       juce::jlimit(0.14f, 0.88f, correctionFilter * (1.22f + pitchLock * 0.22f + hardLock * 0.34f));
   correctionMidiFollowSlow =
@@ -415,6 +432,22 @@ void FatTuneEngine::analysePitch(int noteMask)
   const auto detectorRate = static_cast<float>(sampleRate / static_cast<double>(detectorDecimation));
   const auto minTau = juce::jlimit(2, detectorSize - 4, juce::roundToInt(detectorRate / 1200.0f));
   const auto maxTau = juce::jlimit(minTau + 2, detectorSize - 3, juce::roundToInt(detectorRate / 60.0f));
+  const auto normalizedAcfAt = [this](int tau)
+  {
+    auto acf = 0.0f;
+    auto divisor = 0.0f;
+    const auto limit = detectorSize - tau;
+
+    for (auto i = 0; i < limit; ++i)
+    {
+      const auto a = detectorScratch[static_cast<size_t>(i)];
+      const auto b = detectorScratch[static_cast<size_t>(i + tau)];
+      acf += a * b;
+      divisor += a * a + b * b;
+    }
+
+    return divisor > 0.0000001f ? (2.0f * acf) / divisor : 0.0f;
+  };
 
   auto bestTau = 0;
   auto bestValue = 0.0f;
@@ -479,6 +512,37 @@ void FatTuneEngine::analysePitch(int noteMask)
     }
 
     previousValue = value;
+  }
+
+  if (bestTau > 0)
+  {
+    for (const auto octaveMultiplier : { 2, 4 })
+    {
+      const auto octaveTau = bestTau * octaveMultiplier;
+      if (octaveTau > maxTau)
+        continue;
+
+      const auto octaveValue = normalizedAcfAt(octaveTau);
+      if (octaveValue < bestValue * (hasSmoothedMidi ? 0.68f : 0.78f))
+        continue;
+
+      auto octaveMidi =
+          69.0f + 12.0f * std::log2((detectorRate / static_cast<float>(octaveTau)) / 440.0f);
+      if (hasSmoothedMidi)
+        octaveMidi = foldMidiToReference(octaveMidi, continuityMidi);
+
+      const auto currentDistance = hasSmoothedMidi ? std::abs(bestMidi - continuityMidi) : 0.0f;
+      const auto octaveDistance = hasSmoothedMidi ? std::abs(octaveMidi - continuityMidi) : 0.0f;
+      const auto octaveLooksCleaner =
+          !hasSmoothedMidi || octaveDistance <= currentDistance + 0.35f || octaveMidi < bestMidi - 6.5f;
+
+      if (octaveLooksCleaner)
+      {
+        bestTau = octaveTau;
+        bestValue = juce::jmin(bestValue, octaveValue);
+        bestMidi = octaveMidi;
+      }
+    }
   }
 
   if (bestTau <= 0 || bestValue < 0.60f)
@@ -785,12 +849,23 @@ void FatTuneEngine::updateJumpState(int noteMask)
     analysePitch(noteMask);
     const auto confidenceLock = juce::jlimit(0.0f, 1.0f, (detectedClarity - 0.58f) / 0.28f);
     const auto voicedConfidence = voiced ? juce::jlimit(0.0f, 1.0f, (detectedClarity - 0.56f) / 0.22f) : 0.0f;
+    const auto correctionSemitones = std::abs(pitchRatioOctaves * 12.0f);
     shiftedBlendTarget = voiced ? voicedConfidence + (1.0f - voicedConfidence) * tuneLockStrength : 0.0f;
+    formantPreserveTarget =
+        voiced ? voicedConfidence *
+                     juce::jlimit(0.0f, 0.28f,
+                                  0.040f + tuneLockStrength * 0.055f + correctionSemitones * 0.080f)
+               : 0.0f;
     const auto baseHighPreserve = 0.30f - tuneLockStrength * 0.18f;
     highPreserveTarget =
         juce::jlimit(0.08f, 0.90f,
                      baseHighPreserve +
                          (1.0f - voicedConfidence) * 0.60f * (1.0f - tuneLockStrength * 0.75f));
+    airBoostTarget =
+        voiced ? voicedConfidence *
+                     juce::jlimit(0.0f, 0.17f,
+                                  0.035f + tuneLockStrength * 0.095f + correctionSemitones * 0.030f)
+               : 0.0f;
     const auto stableLock = juce::jlimit(0.0f, 1.0f, static_cast<float>(stableNoteAnalyses - 1) / 3.0f);
     const auto noteConviction =
         (voiced && noteTransitionFramesRemaining == 0 && targetLatchAnalyses == 0)
@@ -926,10 +1001,32 @@ FatTuneEngine::Result FatTuneEngine::readShiftedSample(bool correctionActive, in
   const auto delayed = readDelayOnly();
   const auto blendAlpha = shiftedBlendTarget > shiftedBlend ? shiftedBlendAttackAlpha : shiftedBlendReleaseAlpha;
   shiftedBlend += (shiftedBlendTarget - shiftedBlend) * blendAlpha;
+  formantPreserveMix += (formantPreserveTarget - formantPreserveMix) * formantPreserveAlpha;
   highPreserveMix += (highPreserveTarget - highPreserveMix) * highPreserveAlpha;
+  airBoostGain += (airBoostTarget - airBoostGain) * airBoostAlpha;
 
   result.left = delayed.left + (result.left - delayed.left) * shiftedBlend;
   result.right = delayed.right + (result.right - delayed.right) * shiftedBlend;
+
+  const auto preserveFormantBand = [this](int channel, float shifted, float delayedSample)
+  {
+    const auto channelIndex = static_cast<size_t>(juce::jlimit(0, numChannels - 1, channel));
+    shiftedFormantLowpass[channelIndex] +=
+        formantLowpassAlpha * (shifted - shiftedFormantLowpass[channelIndex]);
+    shiftedFormantHighpass[channelIndex] +=
+        formantHighpassAlpha * (shifted - shiftedFormantHighpass[channelIndex]);
+    delayFormantLowpass[channelIndex] +=
+        formantLowpassAlpha * (delayedSample - delayFormantLowpass[channelIndex]);
+    delayFormantHighpass[channelIndex] +=
+        formantHighpassAlpha * (delayedSample - delayFormantHighpass[channelIndex]);
+
+    const auto shiftedBand = shiftedFormantHighpass[channelIndex] - shiftedFormantLowpass[channelIndex];
+    const auto delayedBand = delayFormantHighpass[channelIndex] - delayFormantLowpass[channelIndex];
+    return shifted + (delayedBand - shiftedBand) * formantPreserveMix;
+  };
+
+  result.left = preserveFormantBand(0, result.left, delayed.left);
+  result.right = preserveFormantBand(1, result.right, delayed.right);
 
   const auto preserveHighBand = [this](int channel, float shifted, float delayedSample)
   {
@@ -947,6 +1044,17 @@ FatTuneEngine::Result FatTuneEngine::readShiftedSample(bool correctionActive, in
 
   result.left = preserveHighBand(0, result.left, delayed.left);
   result.right = preserveHighBand(1, result.right, delayed.right);
+
+  const auto restoreAir = [this](int channel, float sample)
+  {
+    const auto channelIndex = static_cast<size_t>(juce::jlimit(0, numChannels - 1, channel));
+    airBoostLowpass[channelIndex] += airBoostLowpassAlpha * (sample - airBoostLowpass[channelIndex]);
+    const auto high = sample - airBoostLowpass[channelIndex];
+    return airBoostLowpass[channelIndex] + high * (1.0f + airBoostGain);
+  };
+
+  result.left = restoreAir(0, result.left);
+  result.right = restoreAir(1, result.right);
 
   if (!std::isfinite(result.left) || !std::isfinite(result.right))
     return readDelayOnly();

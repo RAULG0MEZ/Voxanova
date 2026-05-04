@@ -8,7 +8,28 @@ const DEFAULT_EQ_Q = 5;
 const DEFAULT_EQ_SHELF_Q = 1.3;
 const DEFAULT_EQ_LOW_CUT_SLOPE = 30;
 
-function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, setMode, showWaveform = true, scale = 12, scaleOpen, setScaleOpen, scaleOptions, setScale, scaleRef, saturation = { mode: 0, amount: 0 }, onSaturationChange, detectedFrequency = 0, spectrumData = [], detectorData = [], graphHeight = 320 }) {
+function EQCurve({
+  postPoints,
+  setPostPoints,
+  prePoints,
+  setPrePoints,
+  mode,
+  setMode,
+  showWaveform = true,
+  scale = 12,
+  scaleOpen,
+  setScaleOpen,
+  scaleOptions,
+  setScale,
+  scaleRef,
+  saturation = { mode: 0, amount: 0 },
+  onSaturationChange,
+  detectedFrequency = 0,
+  spectrumData = [],
+  detectorData = [],
+  graphHeight = 320,
+  spectrumMaxFrequency = 20000
+}) {
   const W = 1296;
   const targetGraphHeight = Math.max(280, Math.min(430, Number(graphHeight) || 320));
   const H = targetGraphHeight;
@@ -26,6 +47,15 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
   const [typeOpen, setTypeOpen] = React.useState(false);
   const [displayScale, setDisplayScale] = React.useState(scale);
   const displayScaleRef = React.useRef(scale);
+  const minFrequency = 20;
+  const maxFrequency = React.useMemo(
+    () => Math.max(20, Math.min(20000, Number(spectrumMaxFrequency) || 20000)),
+    [spectrumMaxFrequency]
+  );
+  const frequencyRangeLog = React.useMemo(
+    () => Math.max(1e-9, Math.log10(maxFrequency / minFrequency)),
+    [maxFrequency]
+  );
   const latestPointsRef = React.useRef([]);
   const nodeInfoRef = React.useRef(null);
   const setPointsRef = React.useRef(null);
@@ -178,6 +208,25 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
       ? 30
       : 12
   );
+  const clampEqFrequency = (freq) => clamp(freq, minFrequency, maxFrequency);
+  const getSurferTrackingWindow = (freq) => {
+    const anchor = clampEqFrequency(Number(freq) || 1000);
+    return [
+      clampEqFrequency(anchor * 0.5),
+      clampEqFrequency(anchor * 1.5)
+    ];
+  };
+  const resolveSurferTargetFrequency = (anchorFreq, detected, ratio) => {
+    if (!Number.isFinite(detected) || detected < 55 || !Number.isFinite(ratio) || ratio <= 0) {
+      return clampEqFrequency(anchorFreq);
+    }
+
+    const [windowLow, windowHigh] = getSurferTrackingWindow(anchorFreq);
+    const tracked = clampEqFrequency(detected * ratio);
+    return tracked >= windowLow && tracked <= windowHigh
+      ? tracked
+      : clampEqFrequency(anchorFreq);
+  };
   const withBandDefaults = (point) => {
     const type = getBandType(point);
     const isDesser = type === DESSER_TYPE;
@@ -187,7 +236,9 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
     const explicitCompEnabled = point.compEnabled === true || point.compEnabled === 'true' || Number(point.compEnabled) >= 0.5;
     const legacyCompEnabled = Math.abs(comp) > 0.05 && Math.abs(comp - gain) > 0.05;
     return {
-      freq: clamp(point.freq || (isDesser ? 5600 : 1000), isDesser ? DESSER_FREQ_MIN : 20, isDesser ? DESSER_FREQ_MAX : 20000),
+      freq: isDesser
+        ? clamp(point.freq || 5600, DESSER_FREQ_MIN, DESSER_FREQ_MAX)
+        : clampEqFrequency(point.freq || 1000),
       gain,
       q: getPointQ(point.q, type),
       comp,
@@ -263,11 +314,11 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
         const target = isDraggedSurfBand
           ? band.freq
           : hasDetectedPitch && Number.isFinite(ratio) && ratio > 0
-          ? clamp(detected * ratio, 20, 20000)
+          ? resolveSurferTargetFrequency(band.freq, detected, ratio)
           : band.freq;
         const current = Number.isFinite(previousEntry.freq) ? previousEntry.freq : target;
         const freq = smoothFrequency(current, target, shouldSnap);
-        const centsAway = Math.abs(1200 * Math.log2(target / clamp(freq, 20, 20000)));
+        const centsAway = Math.abs(1200 * Math.log2(target / clampEqFrequency(freq)));
 
         return {
           type: band.type,
@@ -362,6 +413,7 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
     if (updated.type === 'Surfer Bell' && (Object.prototype.hasOwnProperty.call(patch, 'freq') || Object.prototype.hasOwnProperty.call(patch, 'type'))) {
       const ratio = getSurfRatio(updated.freq);
       if (ratio) updated.surfRatio = ratio;
+      else updated.surfRatio = 0;
     }
     const nextPts = [...currentPoints];
     nextPts[idx] = updated;
@@ -405,7 +457,7 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
       const dx = event.clientX - startX;
       const dy = event.clientY - startY;
       if (field === 'freq') {
-        const freq = Math.round(clamp(startPoint.freq * Math.pow(2, dx / 130), 20, 20000));
+        const freq = Math.round(clampEqFrequency(startPoint.freq * Math.pow(2, dx / 130)));
         targetIdx = applyPointPatch(targetIdx, { freq }, { resort: true, updateRange: false });
       } else if (field === 'gain') {
         const gain = CUT_TYPES.has(startPoint.type)
@@ -475,10 +527,11 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
   };
 
   const freqToX = (f) => {
-    return padL + (Math.log10(clamp(f, 20, 20000) / 20) / Math.log10(1000)) * innerW;
+    const clamped = clampEqFrequency(f);
+    return padL + (Math.log10(clamped / minFrequency) / frequencyRangeLog) * innerW;
   };
   const xToFreq = (x) => {
-    return 20 * 1000 ** clamp((x - padL) / innerW, 0, 1);
+    return minFrequency * Math.pow(maxFrequency / minFrequency, clamp((x - padL) / innerW, 0, 1));
   };
   const gainToYAtScale = (g, range) => padT + ((range - Math.max(-range, Math.min(range, g))) / (range * 2)) * innerH;
   const gainToCurveYAtScale = (g, range) => padT + ((range - g) / (range * 2)) * innerH;
@@ -499,7 +552,7 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
 
   const bandShapeGainAt = (point, freq) => {
     const p = withBandDefaults(point);
-    const logD = Math.log10(clamp(freq, 20, 20000) / p.freq);
+    const logD = Math.log10(clampEqFrequency(freq) / p.freq);
     const q = clamp(p.q || DEFAULT_EQ_Q, ...getQRange(p));
 
     switch (p.type) {
@@ -529,7 +582,7 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
       }
       case DESSER_TYPE: {
         const slopeFactor = p.deessMode === 'wider' ? 1.15 : 4.7;
-        const highBand = 1 / (1 + (p.freq / clamp(freq, 20, 20000)) ** (slopeFactor * 2));
+        const highBand = 1 / (1 + (p.freq / clampEqFrequency(freq)) ** (slopeFactor * 2));
         const thresholdDrive = 0.5 + Math.abs(p.threshold) / 120;
         const amountDb = 1.2 + (p.intensity / 100) * 16;
         return -amountDb * thresholdDrive * highBand;
@@ -565,8 +618,8 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
       return {
         ...band,
         anchorFreq: band.freq,
-        freq: clamp(visualFreq, 20, 20000),
-        isSurfing: Math.abs(clamp(visualFreq, 20, 20000) - band.freq) > 0.5
+        freq: clampEqFrequency(visualFreq),
+        isSurfing: Math.abs(clampEqFrequency(visualFreq) - band.freq) > 0.5
       };
     })
   );
@@ -608,13 +661,13 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
   const buildFrequencySamples = (pts, samples = 420) => {
     const frequencies = [];
     const addFrequency = (freq) => {
-      const clamped = clamp(Number(freq) || 20, 20, 20000);
+      const clamped = clampEqFrequency(Number(freq) || minFrequency);
       frequencies.push(clamped);
     };
 
     for (let i = 0; i <= samples; i++) {
       const t = i / samples;
-      addFrequency(20 * 1000 ** t);
+      addFrequency(minFrequency * Math.pow(maxFrequency / minFrequency, t));
     }
 
     pts.forEach((point) => {
@@ -676,7 +729,7 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
     const mirrorPts = [];
     for (let i = 0; i <= samples; i++) {
       const t = i / samples;
-      const lf = Math.log10(20) + t * (Math.log10(20000) - Math.log10(20));
+      const lf = Math.log10(minFrequency) + t * frequencyRangeLog;
       const f = Math.pow(10, lf);
       const x = padL + t * innerW;
       sourcePts.push({ x, y: gainToY(bandShapeGainAt(source, f)) });
@@ -702,7 +755,7 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
     const livePts = [];
     for (let i = 0; i <= samples; i++) {
       const t = i / samples;
-      const lf = Math.log10(20) + t * (Math.log10(20000) - Math.log10(20));
+      const lf = Math.log10(minFrequency) + t * frequencyRangeLog;
       const f = Math.pow(10, lf);
       const x = padL + t * innerW;
       sourcePts.push({ x, y: gainToY(bandShapeGainAt(source, f)) });
@@ -750,7 +803,7 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
     target.closest?.('.eq-scale-wrap, .eq-node-hit, .eq-surf-ghost-hit, .eq-comp-arrow, .eq-band-fill, .eq-band-line')
   );
   const createBandAtGraphPoint = (sx, sy, { startDrag = false, event = null } = {}) => {
-    const f = clamp(xToFreq(sx), 20, 20000);
+    const f = clampEqFrequency(xToFreq(sx));
     const type = getCreatedFilterType(f);
     if (!canUseFilterType(type, null, points)) {
       const existingIdx = points.findIndex((point) => getBandType(point) === type);
@@ -838,7 +891,7 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
     const sourcePoint = currentPoints[idx];
     if (!sourcePoint) return;
 
-    const frozenFrequency = clamp(liveFrequency, 20, 20000);
+    const frozenFrequency = clampEqFrequency(liveFrequency);
     const frozen = withBandDefaults({
       ...sourcePoint,
       freq: frozenFrequency,
@@ -846,6 +899,7 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
     });
     const ratio = getSurfRatio(frozenFrequency);
     if (ratio) frozen.surfRatio = ratio;
+    else frozen.surfRatio = 0;
 
     const nextPts = [...currentPoints];
     nextPts[idx] = frozen;
@@ -964,7 +1018,7 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
       const shouldExpand = !CUT_TYPES.has(current.type) && (scale > 12 || Math.abs(rawNodeGainAtTwelve) > 12);
       const nextRange = shouldExpand ? 30 : scale;
       const nodeGain = shouldExpand ? yToGainAtScale(sy, 30) : yToGain(sy);
-      p.freq = clamp(xToFreq(sx), 20, 20000);
+      p.freq = clampEqFrequency(xToFreq(sx));
       p.type = current.type;
       p.slope = current.slope;
       p.on = current.on;
@@ -975,6 +1029,7 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
       if (current.type === 'Surfer Bell') {
         const ratio = getSurfRatio(p.freq);
         if (ratio) p.surfRatio = ratio;
+        else p.surfRatio = 0;
       }
       newPts[dragIdx] = p;
       newPts.sort((a, b) => a.freq - b.freq);
@@ -1037,12 +1092,40 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
     return marks;
   }, [scale]);
 
-  const freqMarks = [50, 100, 200, 500, 1000, 2000, 5000, 10000];
-  const metricFreqMarks = [
-    20, 30, 40, 50, 60, 70, 80, 90, 100,
-    200, 300, 400, 500, 600, 700, 800, 900, 1000,
-    2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 20000
-  ];
+  const freqMarks = React.useMemo(() => {
+    const candidates = [50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
+    const marks = candidates.filter((value) => value <= maxFrequency);
+    const roundedMax = Math.round(maxFrequency);
+    if (!marks.includes(roundedMax)) marks.push(roundedMax);
+    return marks.sort((a, b) => a - b);
+  }, [maxFrequency]);
+  const metricFreqMarks = React.useMemo(() => {
+    const marks = new Set();
+    const decadeMin = Math.floor(Math.log10(minFrequency));
+    const decadeMax = Math.floor(Math.log10(maxFrequency));
+    const decades = new Set();
+    for (let exp = decadeMin; exp <= decadeMax; exp += 1) {
+      decades.add(Math.pow(10, exp));
+    }
+
+    decades.forEach((decade) => {
+      for (let coef = 1; coef <= 9; coef += 1) {
+        const value = Math.round(coef * decade);
+        if (value < minFrequency || value > maxFrequency) continue;
+        marks.add(value);
+      }
+    });
+
+    marks.add(minFrequency);
+    marks.add(Math.round(maxFrequency));
+    return Array.from(marks).sort((a, b) => a - b);
+  }, [maxFrequency]);
+  const majorFreqMarks = React.useMemo(() => {
+    const marks = [100, 1000, 10000];
+    const roundedMax = Math.round(maxFrequency);
+    if (!marks.includes(roundedMax)) marks.push(roundedMax);
+    return new Set(marks.filter((value) => value >= minFrequency && value <= maxFrequency));
+  }, [maxFrequency]);
   const dbAxisX = padL + innerW + 10;
   const formatDbLabel = (value) => {
     const rounded = Math.round(value * 10) / 10;
@@ -1181,8 +1264,8 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
   const getBandSpectrumPeak = (band, visualBand = band) => {
     if (!band || inputSpectrum.length < 2) return 0;
 
-    const frequency = clamp(visualBand?.freq || band.freq, 20, 20000);
-    const centerT = (Math.log10(frequency) - Math.log10(20)) / (Math.log10(20000) - Math.log10(20));
+    const frequency = clampEqFrequency(visualBand?.freq || band.freq);
+    const centerT = frequencyRangeLog === 0 ? 0.5 : (Math.log10(frequency / minFrequency) / frequencyRangeLog);
     const q = clamp(band.q || DEFAULT_EQ_Q, 0.1, 50);
     const windowWidth = band.type === 'Low Shelf' || band.type === 'High Shelf'
       ? 0.22
@@ -1319,7 +1402,7 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
     });
     if (isNearExistingNode) return null;
 
-    const freq = clamp(xToFreq(hoverPoint.x), 20, 20000);
+    const freq = clampEqFrequency(xToFreq(hoverPoint.x));
     const type = getCreatedFilterType(freq);
     const totalY = gainToY(totalGain(displayPoints, freq));
     const nearTotalCurve = Math.abs(hoverPoint.y - totalY) < 20;
@@ -1476,7 +1559,7 @@ function EQCurve({ postPoints, setPostPoints, prePoints, setPrePoints, mode, set
         <g mask="url(#eqGridOvalMask)">
           {metricFreqMarks.map(f => {
             const x = freqToX(f);
-            const isMajor = f === 100 || f === 1000 || f === 10000;
+            const isMajor = majorFreqMarks.has(f);
             const isLabeled = freqMarks.includes(f);
             const hover = hoverPoint ? Math.max(0, 1 - Math.abs(x - hoverPoint.x) / (innerW * 0.16)) ** 1.8 : 0;
             const lift = hover * 1.2;

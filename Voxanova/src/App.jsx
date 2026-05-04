@@ -36,6 +36,7 @@ const LAYOUT_ANIMATION_MS = 280;
 const REAL_EQ_SOURCE_HEIGHT = 351;
 const REAL_RACK_SOURCE_HEIGHT = 347;
 const REAL_EQ_SOURCE_Y = 82;
+const DEFAULT_SPECTRUM_MAX_FREQUENCY = 20000;
 const REAL_RACK_SOURCE_Y = 433;
 
 const layoutTargets = {
@@ -274,6 +275,7 @@ const emptyMeters = {
   tuneCents: 0,
   tuneConfidence: 0,
   tuneTargetMidi: 0,
+  spectrumMaxFrequency: DEFAULT_SPECTRUM_MAX_FREQUENCY,
 };
 
 function numberOrZero(value) {
@@ -303,6 +305,10 @@ function metersFromPayload(current, payload) {
   const arrayFromPayload = (id) => (
     Array.isArray(payload[id]) ? payload[id].map(numberOrZero) : current[id]
   );
+  const parsedMaxFrequency = numberOrZero(payload.spectrumMaxFrequency);
+  const safeSpectrumMaxFrequency = Number.isFinite(parsedMaxFrequency) && parsedMaxFrequency >= 20.0
+    ? Math.min(20000, parsedMaxFrequency)
+    : current.spectrumMaxFrequency;
   const visualSilence = payload.visualSilence === true || payload.visualSilence === 1;
   const meterStale = payload.meterStale === true || payload.meterStale === 1;
 
@@ -335,6 +341,7 @@ function metersFromPayload(current, payload) {
       postEqDetectorDb: meterStale
         ? fadeDetectorDbArray(current.postEqDetectorDb, 128)
         : arrayFromPayload("postEqDetectorDb"),
+      spectrumMaxFrequency: safeSpectrumMaxFrequency,
       gateReduction: fadeMeterValue(current.gateReduction, 0.58, 0.001),
       peakReduction: fadeMeterValue(current.peakReduction, 0.58, 0.001),
       glueReduction: fadeMeterValue(current.glueReduction, 0.58, 0.001),
@@ -374,6 +381,7 @@ function metersFromPayload(current, payload) {
     postCompSpectrum: arrayFromPayload("postCompSpectrum"),
     preEqDetectorDb: arrayFromPayload("preEqDetectorDb"),
     postEqDetectorDb: arrayFromPayload("postEqDetectorDb"),
+    spectrumMaxFrequency: safeSpectrumMaxFrequency,
     gateReduction: numberOrZero(payload.gateGr),
     peakReduction: numberOrZero(payload.peakGr),
     glueReduction: numberOrZero(payload.glueGr),
@@ -1373,6 +1381,7 @@ function App() {
           spectrumData={eqMode === 'pre' ? meters.preCompSpectrum : meters.postCompSpectrum}
           detectorData={eqMode === 'pre' ? meters.preEqDetectorDb : meters.postEqDetectorDb}
           graphHeight={eqGraphHeight}
+          spectrumMaxFrequency={Math.max(20, Math.min(20000, Number(meters.spectrumMaxFrequency) || 20000))}
         />
       </div>
 

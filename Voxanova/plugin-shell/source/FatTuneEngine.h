@@ -137,12 +137,26 @@ private:
   float shiftedBlendTarget = 0.0f;
   float shiftedBlendAttackAlpha = 1.0f;
   float shiftedBlendReleaseAlpha = 1.0f;
+  float formantPreserveMix = 0.0f;
+  float formantPreserveTarget = 0.0f;
+  float formantPreserveAlpha = 1.0f;
+  float formantLowpassAlpha = 1.0f;
+  float formantHighpassAlpha = 1.0f;
   float highPreserveMix = 0.35f;
   float highPreserveTarget = 0.35f;
   float highPreserveAlpha = 1.0f;
   float highGuardLowpassAlpha = 1.0f;
+  float airBoostGain = 0.0f;
+  float airBoostTarget = 0.0f;
+  float airBoostAlpha = 1.0f;
+  float airBoostLowpassAlpha = 1.0f;
+  std::array<float, numChannels> shiftedFormantLowpass {};
+  std::array<float, numChannels> shiftedFormantHighpass {};
+  std::array<float, numChannels> delayFormantLowpass {};
+  std::array<float, numChannels> delayFormantHighpass {};
   std::array<float, numChannels> shiftedHighGuardLowpass {};
   std::array<float, numChannels> delayHighGuardLowpass {};
+  std::array<float, numChannels> airBoostLowpass {};
 
   std::vector<float> crossfade;
 
