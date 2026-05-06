@@ -3,6 +3,7 @@ import {
   booleanParameters,
   autoTuneNotes,
   autoTuneScales,
+  autoTuneVoiceTypes,
   defaultValues,
   delayDivisions,
   delayStyles,
@@ -14,12 +15,14 @@ import {
 } from "./pluginContract.js";
 import { hasNativeBackend, sendNativeEditorSize, sendNativeEqBands, sendNativeParameter } from "./nativeBridge.js";
 
-import { useTweaks, TweaksPanel, TweakSection, TweakSelect, TweakToggle } from "./v2/tweaksPanel.jsx";
+import { useTweaks, TweaksPanel, TweakSection, TweakSelect } from "./v2/tweaksPanel.jsx";
 import { EQCurve } from "./v2/eqCurve.jsx";
 import { CompModule, ButterCompModule, PctModule, GateModule, DeEsserModule, StereoModule, DelayModule, ReverbModule } from "./v2/modules.jsx";
 import { AutoTuneModule } from "./v2/ioModules.jsx";
+import { resetOnAltClick, resetOnDoubleClick } from "./v2/controlReset.js";
+import { handleWheelValue } from "./v2/wheelControl.js";
 
-const { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } = React;
+const { useState, useEffect, useRef, useCallback, useMemo } = React;
 
 const booleanParameterSet = new Set(booleanParameters);
 const noteModeToValue = { NOTE: 0, DOT: 1, TRIP: 2 };
@@ -28,84 +31,57 @@ const delayTypeToValue = { NORMAL: 0, WIDE: 1, "PING-PONG": 2 };
 const delayValueToType = ["NORMAL", "WIDE", "PING-PONG"];
 const delayDivisionMax = delayDivisions.length - 1;
 const reverbPredelayDivisionMax = reverbPredelayDivisions.length - 1;
+const FULL_SPECTRUM_TYPE = "Full Spectrum";
+const FULL_SPECTRUM_MIN_RATIO = 1.015;
 const glueBandIds = ["glueLowThreshold", "glueLowMidThreshold", "glueHighMidThreshold", "glueAirThreshold"];
 const eqFilterTypeSet = new Set(EQ_FILTER_TYPES);
-const eqDynamicTypeSet = new Set(["Bell", "Surfer Bell", "Low Shelf", "High Shelf", "Band Pass"]);
+const eqDynamicTypeSet = new Set(["Bell", "Surfer Bell", "Low Shelf", "High Shelf", "Band Pass", FULL_SPECTRUM_TYPE]);
+const eqCutTypeSet = new Set(["Low Cut", "High Cut"]);
 
-const LAYOUT_ANIMATION_MS = 280;
 const REAL_EQ_SOURCE_HEIGHT = 351;
-const REAL_RACK_SOURCE_HEIGHT = 347;
 const REAL_EQ_SOURCE_Y = 82;
 const DEFAULT_SPECTRUM_MAX_FREQUENCY = 20000;
 const REAL_RACK_SOURCE_Y = 433;
 
 const layoutTargets = {
-  normal: { eqGraphHeight: 320, realEqHeight: 351, realRackHeight: 347 },
-  eq: { eqGraphHeight: 390, realEqHeight: 423, realRackHeight: 275 },
-  stack: { eqGraphHeight: 304, realEqHeight: 335, realRackHeight: 363 },
+  normal: { eqGraphHeight: 320, realEqHeight: 351, realRackHeight: 347, eqSectionPadTop: 12, eqSectionPadBottom: 6 },
+  eq: { eqGraphHeight: 674, realEqHeight: 698, realRackHeight: 0, eqSectionPadTop: 10, eqSectionPadBottom: 2 },
 };
 
-const resolveLayoutKey = (focus) => (focus === 'eq' || focus === 'stack' ? focus : 'normal');
-const easeLayout = (t) => 1 - Math.pow(1 - t, 3);
+const EQ_RACK_RESIZE_RANGE = layoutTargets.eq.realEqHeight - layoutTargets.normal.realEqHeight;
+const resolveLayoutKey = (focus) => (focus === 'eq' ? focus : 'normal');
 const mixLayoutValue = (from, to, t) => from + (to - from) * t;
+
+function getLayoutMetrics(progress) {
+  const eased = clamp(Number(progress) || 0, 0, 1);
+  const from = layoutTargets.normal;
+  const target = layoutTargets.eq;
+
+  return {
+    eqGraphHeight: mixLayoutValue(from.eqGraphHeight, target.eqGraphHeight, eased),
+    realEqHeight: mixLayoutValue(from.realEqHeight, target.realEqHeight, eased),
+    realRackHeight: mixLayoutValue(from.realRackHeight, target.realRackHeight, eased),
+    eqSectionPadTop: mixLayoutValue(from.eqSectionPadTop, target.eqSectionPadTop, eased),
+    eqSectionPadBottom: mixLayoutValue(from.eqSectionPadBottom, target.eqSectionPadBottom, eased),
+  };
+}
 
 function getLayoutStyle(metrics) {
   const eqScale = metrics.realEqHeight / REAL_EQ_SOURCE_HEIGHT;
-  const rackScale = metrics.realRackHeight / REAL_RACK_SOURCE_HEIGHT;
 
   return {
+    '--eq-graph-height': `${metrics.eqGraphHeight.toFixed(3)}px`,
+    '--eq-section-pad-top': `${metrics.eqSectionPadTop.toFixed(3)}px`,
+    '--eq-section-pad-bottom': `${metrics.eqSectionPadBottom.toFixed(3)}px`,
     '--real-eq-height': `${metrics.realEqHeight.toFixed(3)}px`,
     '--real-rack-height': `${metrics.realRackHeight.toFixed(3)}px`,
     '--real-eq-bg-height': `${(PLUGIN_HEIGHT * eqScale).toFixed(3)}px`,
     '--real-eq-bg-y': `${(-REAL_EQ_SOURCE_Y * eqScale).toFixed(3)}px`,
-    '--real-rack-bg-height': `${(PLUGIN_HEIGHT * rackScale).toFixed(3)}px`,
-    '--real-rack-bg-y': `${(-REAL_RACK_SOURCE_Y * rackScale).toFixed(3)}px`,
+    '--real-rack-bg-height': `${PLUGIN_HEIGHT}px`,
+    '--real-rack-bg-y': `${-REAL_RACK_SOURCE_Y}px`,
   };
 }
 
-function useAnimatedLayout(targetFocus) {
-  const [visualFocus, setVisualFocus] = useState(targetFocus);
-  const [metrics, setMetrics] = useState(() => layoutTargets[resolveLayoutKey(targetFocus)]);
-  const metricsRef = useRef(metrics);
-
-  useLayoutEffect(() => {
-    const targetKey = resolveLayoutKey(targetFocus);
-    const target = layoutTargets[targetKey];
-    const from = metricsRef.current;
-    let raf = 0;
-    let startedAt = 0;
-
-    const tick = (now) => {
-      if (!startedAt) startedAt = now;
-      const progress = Math.min(1, (now - startedAt) / LAYOUT_ANIMATION_MS);
-      const eased = easeLayout(progress);
-      const next = {
-        eqGraphHeight: mixLayoutValue(from.eqGraphHeight, target.eqGraphHeight, eased),
-        realEqHeight: mixLayoutValue(from.realEqHeight, target.realEqHeight, eased),
-        realRackHeight: mixLayoutValue(from.realRackHeight, target.realRackHeight, eased),
-      };
-
-      metricsRef.current = next;
-      setMetrics(next);
-
-      if (progress < 1) {
-        raf = window.requestAnimationFrame(tick);
-      } else {
-        metricsRef.current = target;
-        setMetrics(target);
-      }
-    };
-
-    raf = window.requestAnimationFrame((now) => {
-      setVisualFocus(targetFocus);
-      tick(now);
-    });
-
-    return () => window.cancelAnimationFrame(raf);
-  }, [targetFocus]);
-
-  return { visualFocus, metrics };
-}
 const reverbModeByV2Preset = {
   "Concert Hall": 0,
   Plate: 2,
@@ -121,9 +97,12 @@ const v2PresetByReverbMode = {
   4: "Chamber",
   18: "Cathedral",
 };
+const DEFAULT_EQ_BELL_Q = 1;
 const DEFAULT_EQ_Q = 5;
 const DEFAULT_EQ_SHELF_Q = 1.3;
 const DEFAULT_EQ_LOW_CUT_SLOPE = 30;
+const DEFAULT_FULL_SPECTRUM_SLOPE = 8;
+const EQ_BAND_SATURATION_MAX_MODE = 3;
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
@@ -141,6 +120,8 @@ function rangeToPercent(value, min, max) {
 }
 
 function defaultEqQForType(type) {
+  if (type === "Bell") return DEFAULT_EQ_BELL_Q;
+  if (type === FULL_SPECTRUM_TYPE) return DEFAULT_FULL_SPECTRUM_SLOPE;
   return type === "Low Shelf" || type === "High Shelf" ? DEFAULT_EQ_SHELF_Q : DEFAULT_EQ_Q;
 }
 
@@ -154,6 +135,39 @@ function normalizeEqSlope(value, type = "Bell") {
   return clamp(Math.round(Number.isFinite(numeric) && numeric > 0 ? numeric : defaultEqSlopeForType(type)), 6, 96);
 }
 
+function fullSpectrumFallbackRange(freq) {
+  const center = clamp(Number(freq) || 1000, 20, 20000);
+  const halfOctaves = 1;
+  return {
+    low: clamp(center / (2 ** halfOctaves), 20, 20000),
+    high: clamp(center * (2 ** halfOctaves), 20, 20000)
+  };
+}
+
+function normalizeFullSpectrumRange(point, freq) {
+  const fallback = fullSpectrumFallbackRange(freq);
+  let low = Number(point?.rangeLow);
+  let high = Number(point?.rangeHigh);
+
+  if (!Number.isFinite(low) || !Number.isFinite(high) || low <= 0 || high <= 0 || high <= low * FULL_SPECTRUM_MIN_RATIO) {
+    low = fallback.low;
+    high = fallback.high;
+  }
+
+  low = clamp(low, 20, 20000);
+  high = clamp(high, 20, 20000);
+
+  if (high <= low * FULL_SPECTRUM_MIN_RATIO) {
+    const center = clamp(Number(freq) || Math.sqrt(Math.max(20, low) * Math.max(20, high)), 20, 20000);
+    const halfRatio = Math.sqrt(FULL_SPECTRUM_MIN_RATIO);
+    low = clamp(center / halfRatio, 20, 20000 / FULL_SPECTRUM_MIN_RATIO);
+    high = clamp(center * halfRatio, low * FULL_SPECTRUM_MIN_RATIO, 20000);
+  }
+
+  const center = clamp(Math.sqrt(low * high), 20, 20000);
+  return { low, high, center };
+}
+
 function normalizeEqPoint(point) {
   const type = point?.type || "Bell";
   if (type === "Desser") return null;
@@ -161,7 +175,8 @@ function normalizeEqPoint(point) {
   const safeType = eqFilterTypeSet.has(type) ? type : "Bell";
   const surfRatio = Number(point?.surfRatio);
   const q = Number(point?.q);
-  const gain = clamp(Number(point?.gain) || 0, -30, 30);
+  const rawGain = clamp(Number(point?.gain) || 0, -30, 30);
+  const gain = eqCutTypeSet.has(safeType) ? clamp(rawGain, 0, 30) : rawGain;
   const comp = clamp(Number(point?.comp) || 0, -30, 30);
   const hasExplicitCompEnabled = Object.prototype.hasOwnProperty.call(point || {}, "compEnabled");
   const explicitCompEnabled = point?.compEnabled === true || point?.compEnabled === "true" || Number(point?.compEnabled) >= 0.5;
@@ -170,12 +185,25 @@ function normalizeEqPoint(point) {
   const compAttack = Number(point?.compAttack);
   const compRelease = Number(point?.compRelease);
   const compRatio = Number(point?.compRatio);
+  const saturationMode = Number(point?.saturationMode ?? point?.satMode);
+  const saturationAmount = Number(point?.saturationAmount ?? point?.satAmount);
+  const rangeLowSlope = Number(point?.rangeLowSlope ?? point?.lowSlope);
+  const rangeHighSlope = Number(point?.rangeHighSlope ?? point?.highSlope);
+
+  const safeFreq = clamp(Math.round(Number(point?.freq) || 1000), 20, 20000);
+  const safeQ = clamp(Number.isFinite(q) && q > 0 ? q : defaultEqQForType(safeType), 0.1, 50);
+  const fullSpectrumRange = safeType === FULL_SPECTRUM_TYPE
+    ? normalizeFullSpectrumRange(point, safeFreq)
+    : null;
+  const safeSaturationMode = eqDynamicTypeSet.has(safeType)
+    ? clamp(Math.round(Number.isFinite(saturationMode) ? saturationMode : 0), 0, EQ_BAND_SATURATION_MAX_MODE)
+    : 0;
 
   return {
     type: safeType,
-    freq: clamp(Math.round(Number(point?.freq) || 1000), 20, 20000),
+    freq: fullSpectrumRange ? Math.round(fullSpectrumRange.center) : safeFreq,
     gain,
-    q: clamp(Number.isFinite(q) && q > 0 ? q : defaultEqQForType(safeType), 0.1, 50),
+    q: safeQ,
     slope: normalizeEqSlope(point?.slope, safeType),
     threshold: clamp(Number(point?.threshold) || -24, -60, 0),
     intensity: clamp(Number(point?.intensity) || 50, 0, 100),
@@ -189,6 +217,16 @@ function normalizeEqPoint(point) {
     compAttack: clamp(Number.isFinite(compAttack) ? compAttack : 12, 0.1, 200),
     compRelease: clamp(Number.isFinite(compRelease) ? compRelease : 140, 5, 1000),
     compRatio: clamp(Number.isFinite(compRatio) ? compRatio : 4, 1, 20),
+    saturationMode: safeSaturationMode,
+    saturationAmount: safeSaturationMode > 0
+      ? clamp(Number.isFinite(saturationAmount) ? saturationAmount : 20, 0, 100)
+      : 0,
+    ...(fullSpectrumRange ? {
+      rangeLow: Math.round(fullSpectrumRange.low),
+      rangeHigh: Math.round(fullSpectrumRange.high),
+      rangeLowSlope: clamp(Number.isFinite(rangeLowSlope) && rangeLowSlope > 0 ? rangeLowSlope : safeQ, 0.1, 50),
+      rangeHighSlope: clamp(Number.isFinite(rangeHighSlope) && rangeHighSlope > 0 ? rangeHighSlope : safeQ, 0.1, 50)
+    } : {}),
     ...(safeType === "Surfer Bell" && Number.isFinite(surfRatio) && surfRatio > 0 ? { surfRatio } : {})
   };
 }
@@ -276,6 +314,7 @@ const emptyMeters = {
   tuneConfidence: 0,
   tuneTargetMidi: 0,
   spectrumMaxFrequency: DEFAULT_SPECTRUM_MAX_FREQUENCY,
+  sampleRate: 48000,
 };
 
 function numberOrZero(value) {
@@ -309,6 +348,10 @@ function metersFromPayload(current, payload) {
   const safeSpectrumMaxFrequency = Number.isFinite(parsedMaxFrequency) && parsedMaxFrequency >= 20.0
     ? Math.min(20000, parsedMaxFrequency)
     : current.spectrumMaxFrequency;
+  const parsedSampleRate = numberOrZero(payload.sampleRate);
+  const safeSampleRate = Number.isFinite(parsedSampleRate) && parsedSampleRate >= 1000
+    ? parsedSampleRate
+    : current.sampleRate;
   const visualSilence = payload.visualSilence === true || payload.visualSilence === 1;
   const meterStale = payload.meterStale === true || payload.meterStale === 1;
 
@@ -342,6 +385,7 @@ function metersFromPayload(current, payload) {
         ? fadeDetectorDbArray(current.postEqDetectorDb, 128)
         : arrayFromPayload("postEqDetectorDb"),
       spectrumMaxFrequency: safeSpectrumMaxFrequency,
+      sampleRate: safeSampleRate,
       gateReduction: fadeMeterValue(current.gateReduction, 0.58, 0.001),
       peakReduction: fadeMeterValue(current.peakReduction, 0.58, 0.001),
       glueReduction: fadeMeterValue(current.glueReduction, 0.58, 0.001),
@@ -382,6 +426,7 @@ function metersFromPayload(current, payload) {
     preEqDetectorDb: arrayFromPayload("preEqDetectorDb"),
     postEqDetectorDb: arrayFromPayload("postEqDetectorDb"),
     spectrumMaxFrequency: safeSpectrumMaxFrequency,
+    sampleRate: safeSampleRate,
     gateReduction: numberOrZero(payload.gateGr),
     peakReduction: numberOrZero(payload.peakGr),
     glueReduction: numberOrZero(payload.glueGr),
@@ -405,27 +450,15 @@ function metersFromPayload(current, payload) {
 
 // Voxanova V2 — main app
 const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
-  "theme": "real",
+  "theme": "real-noir",
   "showWaveform": true,
   "signalActive": true
 }/*EDITMODE-END*/;
 
-// Theme catalogue. Each entry maps a `data-theme` value to its display label,
-// light/dark mode flag, and a swatch gradient used in the picker. The actual
-// color palette lives in styles.css under [data-theme="…"].
+// Night-only theme catalogue. Each entry maps a `data-theme` value to its
+// display label, mode flag, and a swatch gradient used in the picker.
+// The actual color palette lives in styles.css under [data-theme="…"].
 const THEMES = [
-  // Light
-  { id: 'pearl',    label: 'Pearl',    mode: 'light', accent: 'oklch(58% 0.14 252)',
-    swatch: 'linear-gradient(135deg, oklch(97% 0.012 270) 0%, oklch(92% 0.06 285) 100%)' },
-  { id: 'sand',     label: 'Sand',     mode: 'light', accent: 'oklch(60% 0.14 42)',
-    swatch: 'linear-gradient(135deg, oklch(96% 0.018 78) 0%, oklch(88% 0.10 50) 100%)' },
-  { id: 'mint',     label: 'Mint',     mode: 'light', accent: 'oklch(56% 0.12 178)',
-    swatch: 'linear-gradient(135deg, oklch(96% 0.014 168) 0%, oklch(86% 0.08 175) 100%)' },
-  { id: 'mono',     label: 'Paper',    mode: 'light', accent: 'oklch(20% 0 0)',
-    swatch: 'linear-gradient(135deg, oklch(98% 0 0) 0%, oklch(82% 0 0) 100%)' },
-  { id: 'real-paper', label: 'Real Paper', mode: 'light', accent: 'oklch(20% 0 0)',
-    swatch: 'linear-gradient(135deg, oklch(99% 0 0) 0%, oklch(88% 0 0) 50%, oklch(96% 0 0) 100%)' },
-  // Dark
   { id: 'midnight', label: 'Midnight', mode: 'dark',  accent: 'oklch(68% 0.16 248)',
     swatch: 'linear-gradient(135deg, oklch(22% 0.014 268) 0%, oklch(40% 0.14 248) 100%)' },
   { id: 'plum',     label: 'Plum',     mode: 'dark',  accent: 'oklch(72% 0.18 320)',
@@ -438,8 +471,6 @@ const THEMES = [
     swatch: 'linear-gradient(135deg, oklch(12% 0.004 96) 0%, oklch(42% 0.006 96) 52%, oklch(18% 0.004 96) 100%)' },
   { id: 'real-noir', label: 'Real Noir', mode: 'dark', accent: 'oklch(82% 0.030 112)',
     swatch: 'linear-gradient(135deg, oklch(4% 0.002 112) 0%, oklch(18% 0.004 112) 48%, oklch(7% 0.002 112) 100%)' },
-  { id: 'real-frost', label: 'Real Frost', mode: 'light', accent: 'oklch(52% 0.070 246)',
-    swatch: 'linear-gradient(135deg, oklch(99% 0.002 246) 0%, oklch(86% 0.006 246) 48%, oklch(96% 0.003 246) 100%)' },
 ];
 
 const THEME_BY_ID = Object.fromEntries(THEMES.map(t => [t.id, t]));
@@ -471,12 +502,12 @@ const FLAT_PRESETS = PRESET_CATEGORIES.flatMap((category) =>
 // EDITMODE blocks keep working.
 function resolveThemeId(id) {
   if (THEME_BY_ID[id]) return id;
-  if (id === 'lavender') return 'pearl';
+  if (id === 'lavender') return 'real-noir';
   if (id === 'dark') return 'midnight';
-  return 'pearl';
+  return 'real-noir';
 }
 
-function ThemeMenu({ themeId, onSelect, signalActive, onToggleSignal, showWaveform, onToggleWaveform, onClose }) {
+function ThemeMenu({ themeId, onSelect, onClose }) {
   const ref = useRef(null);
   useEffect(() => {
     const onDoc = (e) => { if (ref.current && !ref.current.contains(e.target)) onClose(); };
@@ -491,9 +522,9 @@ function ThemeMenu({ themeId, onSelect, signalActive, onToggleSignal, showWavefo
   return (
     <div className="theme-menu" ref={ref} role="menu">
       <div className="theme-menu-section">
-        <div className="theme-menu-label">Light</div>
+        <div className="theme-menu-label">Night</div>
         <div className="theme-grid">
-          {THEMES.filter(t => t.mode === 'light').map(t => (
+          {THEMES.map(t => (
             <button
               key={t.id}
               type="button"
@@ -509,34 +540,6 @@ function ThemeMenu({ themeId, onSelect, signalActive, onToggleSignal, showWavefo
           ))}
         </div>
       </div>
-      <div className="theme-menu-section">
-        <div className="theme-menu-label">Dark</div>
-        <div className="theme-grid">
-          {THEMES.filter(t => t.mode === 'dark').map(t => (
-            <button
-              key={t.id}
-              type="button"
-              className={`theme-swatch${themeId === t.id ? ' active' : ''}`}
-              style={{ background: t.swatch }}
-              onClick={() => onSelect(t.id)}
-              title={t.label}
-              aria-label={`Theme: ${t.label}`}
-            >
-              <span className="theme-swatch-dot" style={{ background: t.accent }} />
-              <span className="theme-swatch-name">{t.label}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-      <div className="theme-menu-divider" />
-      <button type="button" className="theme-menu-option" onClick={onToggleWaveform}>
-        <span>EQ waveform</span>
-        <span className={`twk-toggle-mini${showWaveform ? ' on' : ''}`} />
-      </button>
-      <button type="button" className="theme-menu-option" onClick={onToggleSignal}>
-        <span>Live signal</span>
-        <span className={`twk-toggle-mini${signalActive ? ' on' : ''}`} />
-      </button>
     </div>
   );
 }
@@ -745,13 +748,14 @@ function FooterLevelMeter({ active, level = 0 }) {
   );
 }
 
-function FooterGainSlider({ label, value, onChange }) {
+function FooterGainSlider({ label, value, onChange, defaultValue = 0 }) {
   const min = -24;
   const max = 24;
   const safeValue = clamp(Number(value) || 0, min, max);
   const pct = ((safeValue - min) / (max - min)) * 100;
 
   const onPointerDown = (event) => {
+    if (resetOnAltClick(event, () => onChange(defaultValue))) return;
     event.preventDefault();
     const target = event.currentTarget;
     target.setPointerCapture?.(event.pointerId);
@@ -779,11 +783,13 @@ function FooterGainSlider({ label, value, onChange }) {
       <div
         className="rev-slider-track"
         onPointerDown={onPointerDown}
+        onDoubleClick={(event) => resetOnDoubleClick(event, () => onChange(defaultValue))}
         role="slider"
         aria-label={`${label} gain`}
         aria-valuemin={min}
         aria-valuemax={max}
         aria-valuenow={safeValue}
+        onWheel={(event) => handleWheelValue(event, safeValue, { min, max, step: 0.1 }, onChange)}
       >
         <div className="rev-slider-fill" style={{ width: `${pct}%` }} />
         <div className="rev-slider-handle" style={{ left: `${pct}%` }} />
@@ -792,9 +798,9 @@ function FooterGainSlider({ label, value, onChange }) {
   );
 }
 
-function FooterGainControl({ label, value, onChange, active, level = 0, output = false }) {
+function FooterGainControl({ label, value, onChange, active, level = 0, output = false, defaultValue = 0 }) {
   const gainText = `${value >= 0 ? '+' : ''}${value.toFixed(1)} dB`;
-  const slider = <FooterGainSlider label={label} value={value} onChange={onChange} />;
+  const slider = <FooterGainSlider label={label} value={value} onChange={onChange} defaultValue={defaultValue} />;
   const meter = <FooterLevelMeter active={active} level={level} />;
   return (
     <div className={`footer-channel${output ? ' output' : ' input'}`}>
@@ -940,9 +946,16 @@ function App() {
   const themeId = resolveThemeId(tweaks.theme);
   const themeMeta = THEME_BY_ID[themeId];
   const [themeMenuOpen, setThemeMenuOpen] = useState(false);
-  const [layoutFocus, setLayoutFocus] = useState(null);
-  const { visualFocus, metrics: layoutMetrics } = useAnimatedLayout(layoutFocus);
+  const [eqExpansion, setEqExpansion] = useState(0);
+  const [rackResizeActive, setRackResizeActive] = useState(false);
+  const rackResizeRef = useRef(null);
   const pluginRef = useRef(null);
+
+  useEffect(() => {
+    if (tweaks.theme !== themeId && !THEME_BY_ID[tweaks.theme]) {
+      setTweak('theme', themeId);
+    }
+  }, [setTweak, themeId, tweaks.theme]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -989,11 +1002,22 @@ function App() {
   }, []);
 
   // EQ state
-  const [eqMode, setEqMode] = useState('post');
-  const [eqScale, setEqScale] = useState(12); // dB range ± display
+  const [eqMode, setEqMode] = useState('pre');
+  const [eqScaleByMode, setEqScaleByMode] = useState({ pre: 12, post: 12 }); // dB range ± display per EQ view
   const [eqScaleOpen, setEqScaleOpen] = useState(false);
   const eqScaleRef = useRef(null);
   const scaleOptions = [3, 6, 12, 30];
+  const eqScale = eqScaleByMode[eqMode] ?? 12;
+  const setActiveEqScale = useCallback((nextOrUpdater) => {
+    setEqScaleByMode((current) => {
+      const currentScale = current[eqMode] ?? 12;
+      const nextScale = typeof nextOrUpdater === 'function' ? nextOrUpdater(currentScale) : nextOrUpdater;
+      return {
+        ...current,
+        [eqMode]: nextScale,
+      };
+    });
+  }, [eqMode]);
   const [eqSaturation, setEqSaturation] = useState({
     pre: { mode: defaultValues.preSaturationMode, amount: defaultValues.preSaturationAmount },
     post: { mode: defaultValues.postSaturationMode, amount: defaultValues.postSaturationAmount },
@@ -1199,11 +1223,13 @@ function App() {
   const atAmount = values.tuneAmount;
   const atKey = autoTuneNotes[clamp(Math.round(values.tuneKey), 0, autoTuneNotes.length - 1)] || 'C';
   const atScale = autoTuneScales[clamp(Math.round(values.tuneScale), 0, autoTuneScales.length - 1)] || 'MAJ';
+  const atVoiceType = autoTuneVoiceTypes[clamp(Math.round(values.tuneVoiceType), 0, autoTuneVoiceTypes.length - 1)] || 'TENOR';
   const atCustomMask = values.tuneCustomNotes;
   const setAtOn = useCallback((value) => setParam("tuneEnabled", value), [setParam]);
   const setAtAmount = useCallback((value) => setParam("tuneAmount", value), [setParam]);
   const setAtKey = useCallback((value) => setParam("tuneKey", presetIndex(autoTuneNotes, value)), [setParam]);
   const setAtScale = useCallback((value) => setParam("tuneScale", presetIndex(autoTuneScales, value)), [setParam]);
+  const setAtVoiceType = useCallback((value) => setParam("tuneVoiceType", presetIndex(autoTuneVoiceTypes, value)), [setParam]);
   const setAtCustomMask = useCallback((value) => setParam("tuneCustomNotes", value), [setParam]);
   const liveTunePitch = useMemo(() => ({
     frequency: meters.tuneFrequency,
@@ -1216,14 +1242,136 @@ function App() {
   const outputGain = values.outputGain;
   const setInputGain = useCallback((value) => setParam("inputGain", value), [setParam]);
   const setOutputGain = useCallback((value) => setParam("outputGain", value), [setParam]);
-  const isRealTheme = themeId.startsWith("real");
-  const visualLayoutKey = resolveLayoutKey(visualFocus);
+  const layoutMetrics = useMemo(() => getLayoutMetrics(eqExpansion), [eqExpansion]);
+  const visualLayoutKey = resolveLayoutKey(eqExpansion > 0.01 ? 'eq' : null);
   const eqGraphHeight = layoutMetrics.eqGraphHeight;
-  const stackDensity = !isRealTheme && visualLayoutKey === 'eq' ? "compact" : "normal";
-  const realLayoutStyle = useMemo(
-    () => (isRealTheme ? getLayoutStyle(layoutMetrics) : undefined),
-    [isRealTheme, layoutMetrics]
+  const rackMaximized = eqExpansion >= 0.985;
+  const activeEqPointCount = eqMode === 'pre' ? eqPrePoints.length : eqPostPoints.length;
+  const layoutStyle = useMemo(
+    () => getLayoutStyle(layoutMetrics),
+    [layoutMetrics]
   );
+
+  const setClampedEqExpansion = useCallback((nextOrUpdater) => {
+    setEqExpansion((current) => {
+      const next = typeof nextOrUpdater === 'function' ? nextOrUpdater(current) : nextOrUpdater;
+      return clamp(Number(next) || 0, 0, 1);
+    });
+  }, []);
+
+  const onRackResizePointerDown = useCallback((event) => {
+    if (event.button !== undefined && event.button !== 0) return;
+    if (rackResizeRef.current) return;
+    if (resetOnAltClick(event, () => setClampedEqExpansion(0))) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const pluginRect = pluginRef.current?.getBoundingClientRect?.();
+    const uiScale = pluginRect?.height
+      ? Math.max(0.1, pluginRect.height / PLUGIN_HEIGHT)
+      : Math.max(0.1, getScaleForPluginRect(getPluginFrameRect()));
+    const drag = {
+      startY: event.clientY,
+      startExpansion: eqExpansion,
+      uiScale,
+    };
+
+    rackResizeRef.current = drag;
+    setRackResizeActive(true);
+    document.body.classList.add('is-rack-resizing');
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+
+    const onMove = (moveEvent) => {
+      const currentDrag = rackResizeRef.current;
+      if (!currentDrag) return;
+
+      moveEvent.preventDefault();
+      const deltaY = (moveEvent.clientY - currentDrag.startY) / currentDrag.uiScale;
+      setClampedEqExpansion(currentDrag.startExpansion + deltaY / EQ_RACK_RESIZE_RANGE);
+    };
+
+    const onUp = () => {
+      rackResizeRef.current = null;
+      setRackResizeActive(false);
+      document.body.classList.remove('is-rack-resizing');
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+    };
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  }, [eqExpansion, setClampedEqExpansion]);
+
+  const onRackResizeMouseDown = useCallback((event) => {
+    if (event.button !== undefined && event.button !== 0) return;
+    if (rackResizeRef.current) return;
+    if (resetOnAltClick(event, () => setClampedEqExpansion(0))) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const pluginRect = pluginRef.current?.getBoundingClientRect?.();
+    const uiScale = pluginRect?.height
+      ? Math.max(0.1, pluginRect.height / PLUGIN_HEIGHT)
+      : Math.max(0.1, getScaleForPluginRect(getPluginFrameRect()));
+    const drag = {
+      startY: event.clientY,
+      startExpansion: eqExpansion,
+      uiScale,
+    };
+
+    rackResizeRef.current = drag;
+    setRackResizeActive(true);
+    document.body.classList.add('is-rack-resizing');
+
+    const onMove = (moveEvent) => {
+      const currentDrag = rackResizeRef.current;
+      if (!currentDrag) return;
+
+      moveEvent.preventDefault();
+      const deltaY = (moveEvent.clientY - currentDrag.startY) / currentDrag.uiScale;
+      setClampedEqExpansion(currentDrag.startExpansion + deltaY / EQ_RACK_RESIZE_RANGE);
+    };
+
+    const onUp = () => {
+      rackResizeRef.current = null;
+      setRackResizeActive(false);
+      document.body.classList.remove('is-rack-resizing');
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }, [eqExpansion, setClampedEqExpansion]);
+
+  const onRackResizeKeyDown = useCallback((event) => {
+    const smallStep = 8 / EQ_RACK_RESIZE_RANGE;
+    const largeStep = 24 / EQ_RACK_RESIZE_RANGE;
+
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      setClampedEqExpansion((current) => current + smallStep);
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      setClampedEqExpansion((current) => current - smallStep);
+    } else if (event.key === 'PageDown') {
+      event.preventDefault();
+      setClampedEqExpansion((current) => current + largeStep);
+    } else if (event.key === 'PageUp') {
+      event.preventDefault();
+      setClampedEqExpansion((current) => current - largeStep);
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      setClampedEqExpansion(0);
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      setClampedEqExpansion(1);
+    }
+  }, [setClampedEqExpansion]);
 
   const [presetIdx, setPresetIdx] = useState(0);
   const [presetOpen, setPresetOpen] = useState(false);
@@ -1234,7 +1382,22 @@ function App() {
   const selectPreset = useCallback((name) => {
     const index = FLAT_PRESETS.findIndex((preset) => preset.name === name);
     if (index >= 0) setPresetIdx(index);
-  }, []);
+    if (name !== 'Default') return;
+
+    setValues(defaultValues);
+    setEqMode('pre');
+    setEqSaturation({
+      pre: { mode: defaultValues.preSaturationMode, amount: defaultValues.preSaturationAmount },
+      post: { mode: defaultValues.postSaturationMode, amount: defaultValues.postSaturationAmount },
+    });
+    setEqPrePointsFromUi([]);
+    setEqPostPointsFromUi([]);
+    Object.keys(defaultValues).forEach((id) => {
+      const value = defaultValues[id];
+      sendNativeParameter(id, booleanParameterSet.has(id) ? (value ? 1 : 0) : value);
+    });
+    sendNativeEqBands({ pre: [], post: [] });
+  }, [setEqPostPointsFromUi, setEqPrePointsFromUi]);
 
   const { presets: userPresets, savePreset, deletePreset } = useUserPresets();
 
@@ -1263,10 +1426,12 @@ function App() {
     <div
       className="plugin"
       ref={pluginRef}
-      style={realLayoutStyle}
+      style={layoutStyle}
       data-layout-focus={visualLayoutKey}
-      data-stack-density={stackDensity}
-      onPointerLeave={() => setLayoutFocus(null)}
+      data-rack-resizing={rackResizeActive ? "true" : "false"}
+      data-rack-maximized={rackMaximized ? "true" : "false"}
+      data-eq-empty={activeEqPointCount === 0 ? "true" : "false"}
+      data-stack-density="normal"
     >
       <div className="real-bg" aria-hidden="true">
         <div className="real-bg-slice real-bg-header" />
@@ -1275,7 +1440,7 @@ function App() {
         <div className="real-bg-slice real-bg-footer" />
       </div>
       {/* ── Header ── */}
-      <div className="plugin-header" onPointerMove={() => setLayoutFocus(null)}>
+      <div className="plugin-header">
         <div className="brand">
           <button type="button" className="brand-mark" onClick={() => setInfoOpen(true)} aria-haspopup="dialog">
             Voxanova
@@ -1327,7 +1492,15 @@ function App() {
             <button className={ab === 'A' ? 'active' : ''} onClick={() => setAb('A')}>A</button>
             <button className={ab === 'B' ? 'active' : ''} onClick={() => setAb('B')}>B</button>
           </div>
-          <button className={`icon-btn${tweaks.signalActive ? ' active' : ''}`} onClick={() => setTweak('signalActive', !tweaks.signalActive)} title="Toggle signal">
+          <button
+            className={`icon-btn${tweaks.signalActive ? ' active' : ''}`}
+            onClick={(event) => {
+              if (resetOnAltClick(event, () => setTweak('signalActive', TWEAK_DEFAULTS.signalActive))) return;
+              setTweak('signalActive', !tweaks.signalActive);
+            }}
+            onDoubleClick={(event) => resetOnDoubleClick(event, () => setTweak('signalActive', TWEAK_DEFAULTS.signalActive))}
+            title="Toggle signal"
+          >
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
               <path d="M2 7h2l1.5-3 3 6 1.5-3h2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
@@ -1338,7 +1511,11 @@ function App() {
               title="Theme & display"
               aria-haspopup="menu"
               aria-expanded={themeMenuOpen}
-              onClick={() => setThemeMenuOpen(o => !o)}
+              onClick={(event) => {
+                if (resetOnAltClick(event, () => { setTweak('theme', TWEAK_DEFAULTS.theme); setThemeMenuOpen(false); })) return;
+                setThemeMenuOpen(o => !o);
+              }}
+              onDoubleClick={(event) => resetOnDoubleClick(event, () => { setTweak('theme', TWEAK_DEFAULTS.theme); setThemeMenuOpen(false); })}
             >
               <svg width="14" height="14" viewBox="0 0 14 14"><path d="M2 4h10M2 7h10M2 10h10" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" /></svg>
             </button>
@@ -1346,10 +1523,6 @@ function App() {
               <ThemeMenu
                 themeId={themeId}
                 onSelect={(id) => { setTweak('theme', id); setThemeMenuOpen(false); }}
-                signalActive={tweaks.signalActive}
-                onToggleSignal={() => setTweak('signalActive', !tweaks.signalActive)}
-                showWaveform={tweaks.showWaveform}
-                onToggleWaveform={() => setTweak('showWaveform', !tweaks.showWaveform)}
                 onClose={() => setThemeMenuOpen(false)}
               />
             )}
@@ -1360,7 +1533,7 @@ function App() {
       {savePresetOpen && <SavePresetModal onSave={handleSavePreset} onClose={() => setSavePresetOpen(false)} />}
 
       {/* ── EQ ── */}
-      <div className="eq-section" onPointerMove={() => setLayoutFocus('eq')}>
+      <div className="eq-section">
         <EQCurve
           postPoints={eqPostPoints}
           setPostPoints={setEqPostPointsFromUi}
@@ -1373,7 +1546,7 @@ function App() {
           scaleOpen={eqScaleOpen}
           setScaleOpen={setEqScaleOpen}
           scaleOptions={scaleOptions}
-          setScale={setEqScale}
+          setScale={setActiveEqScale}
           scaleRef={eqScaleRef}
           saturation={activeEqSaturation}
           onSaturationChange={setActiveEqSaturation}
@@ -1382,14 +1555,48 @@ function App() {
           detectorData={eqMode === 'pre' ? meters.preEqDetectorDb : meters.postEqDetectorDb}
           graphHeight={eqGraphHeight}
           spectrumMaxFrequency={Math.max(20, Math.min(20000, Number(meters.spectrumMaxFrequency) || 20000))}
+          sampleRate={meters.sampleRate}
+        />
+        <button
+          type="button"
+          className={`rack-toggle-btn${rackMaximized ? ' show-rack-btn' : ' hide-rack-btn'}`}
+          onClick={(event) => {
+            if (resetOnAltClick(event, () => setClampedEqExpansion(0))) return;
+            setClampedEqExpansion(rackMaximized ? 0 : 1);
+          }}
+          onDoubleClick={(event) => resetOnDoubleClick(event, () => setClampedEqExpansion(0))}
+          aria-label={rackMaximized ? "Show rack" : "Hide rack"}
+        >
+          <svg className="rack-toggle-icon" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+            {rackMaximized ? (
+              <path d="M2 6l3-3 3 3M5 3v5" fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round" />
+            ) : (
+              <path d="M2 4l3 3 3-3M5 2v5" fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round" />
+            )}
+          </svg>
+          {rackMaximized ? 'Show Rack' : 'Hide Rack'}
+        </button>
+        <div
+          className="rack-resize-handle"
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="Resize EQ"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(eqExpansion * 100)}
+          tabIndex={0}
+          title="Resize EQ"
+          onPointerDown={onRackResizePointerDown}
+          onMouseDown={onRackResizeMouseDown}
+          onDoubleClick={(event) => resetOnDoubleClick(event, () => setClampedEqExpansion(0))}
+          onKeyDown={onRackResizeKeyDown}
         />
       </div>
 
       {/* ── Modules ── */}
       <div
         className="modules-row"
-        data-stack-density={stackDensity}
-        onPointerMove={() => setLayoutFocus('stack')}
+        data-stack-density="normal"
       >
         {/* Peak Sniper + Butter Comp stacked */}
         <div className="module module-stack">
@@ -1427,14 +1634,6 @@ function App() {
             compact
           />
           <div className="stack-divider" />
-          <GateModule
-            threshold={gateThresh} setThreshold={setGateThresh}
-            on={gateOn} setOn={setGateOn}
-            signalActive={tweaks.signalActive}
-            waveform={meters.gateWaveform}
-            compact
-          />
-          <div className="stack-divider" />
           <DeEsserModule
             low={deEsserLow} setLow={setDeEsserLow}
             high={deEsserHigh} setHigh={setDeEsserHigh}
@@ -1442,6 +1641,14 @@ function App() {
             on={deEsserOn} setOn={setDeEsserOn}
             signalActive={tweaks.signalActive}
             spectrum={meters.preCompSpectrum}
+          />
+          <div className="stack-divider" />
+          <GateModule
+            threshold={gateThresh} setThreshold={setGateThresh}
+            on={gateOn} setOn={setGateOn}
+            signalActive={tweaks.signalActive}
+            waveform={meters.gateWaveform}
+            compact
           />
         </div>
 
@@ -1451,6 +1658,7 @@ function App() {
             amount={atAmount} setAmount={setAtAmount}
             key_={atKey} setKey={setAtKey}
             scale_={atScale} setScale={setAtScale}
+            voiceType={atVoiceType} setVoiceType={setAtVoiceType}
             customMask={atCustomMask} setCustomMask={setAtCustomMask}
             on={atOn} setOn={setAtOn}
             signalActive={tweaks.signalActive}
@@ -1472,11 +1680,12 @@ function App() {
       </div>
 
       {/* ── Footer I/O ── */}
-      <div className="footer-meta" onPointerMove={() => setLayoutFocus(null)}>
+      <div className="footer-meta">
         <FooterGainControl
           label="INPUT"
           value={inputGain}
           onChange={setInputGain}
+          defaultValue={defaultValues.inputGain}
           active={tweaks.signalActive}
           level={meters.inputLevel}
         />
@@ -1484,6 +1693,7 @@ function App() {
           label="OUTPUT"
           value={outputGain}
           onChange={setOutputGain}
+          defaultValue={defaultValues.outputGain}
           active={tweaks.signalActive}
           level={meters.outputLevel}
           output
@@ -1497,11 +1707,9 @@ function App() {
           label="Palette"
           value={themeId}
           onChange={(v) => setTweak('theme', v)}
-          options={THEMES.map(t => ({ value: t.id, label: `${t.label} · ${t.mode === 'dark' ? 'Dark' : 'Light'}` }))}
+          defaultValue={TWEAK_DEFAULTS.theme}
+          options={THEMES.map(t => ({ value: t.id, label: `${t.label} · Night` }))}
         />
-        <TweakSection label="Display" />
-        <TweakToggle label="EQ waveform" value={tweaks.showWaveform} onChange={(v) => setTweak('showWaveform', v)} />
-        <TweakToggle label="Live signal" value={tweaks.signalActive} onChange={(v) => setTweak('signalActive', v)} />
       </TweaksPanel>
       <EditorResizeGrip enabled={nativeOnline} />
     </div>

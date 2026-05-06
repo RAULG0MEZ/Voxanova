@@ -15,6 +15,7 @@ public:
     int key = 0;
     int scale = 0;
     int customMask = 0;
+    int voiceType = 1;
   };
 
   struct Result
@@ -45,6 +46,7 @@ public:
 private:
   static constexpr int numChannels = 2;
   static constexpr int maxScaleCount = 39;
+  static constexpr int lpcOrder = 12;
 
   void configureCorrection(const Settings& settings);
   void pushDetectorSample(float sample);
@@ -53,6 +55,9 @@ private:
   void updateJumpState(int noteMask);
   Result readShiftedSample(bool correctionActive, int noteMask);
   Result readDelayOnly() const;
+  void updateLpcFormantModels(float dryIndex, float shiftedIndex, float correctionSemitones, float confidence);
+  bool computeLpcForChannel(int channel, float centerIndex, std::array<float, lpcOrder + 1>& coefficients) const;
+  float applyLpcFormantTransfer(int channel, float shifted);
   float findBestSpliceIndex(float referenceIndex, float targetIndex, float searchRadius) const;
   float readCubic(int channel, float index) const;
   float readCubicWithAhead(int channel, float index, int ahead) const;
@@ -78,6 +83,7 @@ private:
   int fragmentIndex = 0;
   int fragmentCounter = 0;
   bool crossfading = false;
+  int spliceFadeSamples = 32;
   int readAhead = 0;
   int previousReadAhead = 0;
   bool fastMode = false;
@@ -99,13 +105,19 @@ private:
   float noteSelectMidi = 0.0f;
   float noteSelectFollow = 0.08f;
   bool hasNoteSelectMidi = false;
+  float noteCenterMidi = 0.0f;
+  float noteCenterFollow = 0.06f;
+  bool hasNoteCenterMidi = false;
   float correctionMidi = 0.0f;
   float correctionMidiFollowFast = 0.26f;
   float correctionMidiFollowSlow = 0.16f;
   bool hasCorrectionMidi = false;
   float tuneLockStrength = 0.0f;
+  float vibratoPreserve = 0.85f;
   float centerLockGain = 1.0f;
   float tonalCorrectionFloor = 0.35f;
+  float correctionToleranceOctaves = 5.0f / 1200.0f;
+  float correctionKneeOctaves = 10.0f / 1200.0f;
   float pitchTrendSemitones = 0.0f;
   float detectorFollowFast = 0.45f;
   float detectorFollowSlow = 0.28f;
@@ -115,6 +127,7 @@ private:
   int configuredKey = -1;
   int configuredScale = -1;
   int configuredCustomMask = -1;
+  int configuredVoiceType = -1;
   int configuredFragmentSize = 0;
   double configuredSampleRate = 0.0;
   int configuredNoteMask = 0;
@@ -142,6 +155,11 @@ private:
   float formantPreserveAlpha = 1.0f;
   float formantLowpassAlpha = 1.0f;
   float formantHighpassAlpha = 1.0f;
+  float lpcFormantMix = 0.0f;
+  float lpcFormantTarget = 0.0f;
+  float lpcFormantAlpha = 1.0f;
+  float lpcCoeffAlpha = 1.0f;
+  int lpcWindowSamples = 512;
   float highPreserveMix = 0.35f;
   float highPreserveTarget = 0.35f;
   float highPreserveAlpha = 1.0f;
@@ -150,15 +168,31 @@ private:
   float airBoostTarget = 0.0f;
   float airBoostAlpha = 1.0f;
   float airBoostLowpassAlpha = 1.0f;
+  float sibilanceLowpass = 0.0f;
+  float sibilanceLowEnv = 0.0f;
+  float sibilanceHighEnv = 0.0f;
+  float sibilanceGuard = 0.0f;
+  float sibilanceLowpassAlpha = 1.0f;
+  float sibilanceEnvAttackAlpha = 1.0f;
+  float sibilanceEnvReleaseAlpha = 1.0f;
+  float sibilanceGuardAttackAlpha = 1.0f;
+  float sibilanceGuardReleaseAlpha = 1.0f;
   std::array<float, numChannels> shiftedFormantLowpass {};
   std::array<float, numChannels> shiftedFormantHighpass {};
   std::array<float, numChannels> delayFormantLowpass {};
   std::array<float, numChannels> delayFormantHighpass {};
+  std::array<std::array<float, lpcOrder + 1>, numChannels> dryLpc {};
+  std::array<std::array<float, lpcOrder + 1>, numChannels> dryLpcTarget {};
+  std::array<std::array<float, lpcOrder + 1>, numChannels> shiftedLpc {};
+  std::array<std::array<float, lpcOrder + 1>, numChannels> shiftedLpcTarget {};
+  std::array<std::array<float, lpcOrder>, numChannels> lpcInputHistory {};
+  std::array<std::array<float, lpcOrder>, numChannels> lpcOutputHistory {};
   std::array<float, numChannels> shiftedHighGuardLowpass {};
   std::array<float, numChannels> delayHighGuardLowpass {};
   std::array<float, numChannels> airBoostLowpass {};
 
   std::vector<float> crossfade;
+  std::vector<float> lpcWindow;
 
   static constexpr int detectorDecimation = 4;
   int detectorSize = 2048;
@@ -171,6 +205,8 @@ private:
   float detectorLowpassAlpha = 1.0f;
   float detectedFrequency = 0.0f;
   float detectedClarity = 0.0f;
+  float detectorMinFrequency = 70.0f;
+  float detectorMaxFrequency = 720.0f;
   float smoothedMidi = 0.0f;
   bool hasSmoothedMidi = false;
 

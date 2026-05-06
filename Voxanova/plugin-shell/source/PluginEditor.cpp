@@ -10,7 +10,7 @@ constexpr int baseEditorWidth = 1360;
 constexpr int baseEditorHeight = 820;
 constexpr float minEditorScale = 0.5f;
 constexpr float maxEditorScale = 2.0f;
-constexpr const char* webAssetVersion = "20260504-98";
+constexpr const char* webAssetVersion = "20260505-06";
 
 juce::WebBrowserComponent::Resource makeTextResource(const juce::String& text)
 {
@@ -222,6 +222,7 @@ void VoxanovaAudioProcessorEditor::timerCallback()
   payload->setProperty("tuneConfidence", visualSilence ? 0.0f : snapshot.tuneConfidence);
   payload->setProperty("tuneTargetMidi", visualSilence ? 0.0f : snapshot.tuneTargetMidi);
   payload->setProperty("spectrumMaxFrequency", spectrumMaxFrequency);
+  payload->setProperty("sampleRate", sampleRate > 0.0 ? sampleRate : 48000.0);
   auto makeWaveformPayload = [](const auto& samples) {
     juce::Array<juce::var> waveform;
     waveform.ensureStorageAllocated(static_cast<int>(samples.size()));
@@ -298,6 +299,9 @@ void VoxanovaAudioProcessorEditor::timerCallback()
 
   if (auto* tuneCustomNotes = audioProcessor.parameters.getRawParameterValue("tuneCustomNotes"))
     payload->setProperty("tuneCustomNotes", tuneCustomNotes->load());
+
+  if (auto* tuneVoiceType = audioProcessor.parameters.getRawParameterValue("tuneVoiceType"))
+    payload->setProperty("tuneVoiceType", tuneVoiceType->load());
 
   if (auto* peakEnabled = audioProcessor.parameters.getRawParameterValue("peakEnabled"))
     payload->setProperty("peakEnabled", peakEnabled->load());

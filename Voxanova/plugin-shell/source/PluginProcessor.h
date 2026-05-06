@@ -191,7 +191,8 @@ private:
     std::array<float, 2> dcBlock {};
   };
 
-  static constexpr int eqMaxFilterStages = 8;
+  static constexpr int eqMaxCutFilterStages = 8;
+  static constexpr int eqMaxFilterStages = eqMaxCutFilterStages + 1;
   static constexpr int eqWallSlopeDb = 120;
 
   struct EqFilterStage
@@ -256,11 +257,16 @@ private:
       wasActive = false;
       previousType = -1;
       previousStageCount = 0;
-      for (auto& detector : compDetectorFilters)
-        detector.reset();
+      for (auto& channelDetectors : compDetectorFilters)
+        for (auto& detector : channelDetectors)
+          detector.reset();
       for (auto& channelStages : soloFilters)
         for (auto& stage : channelStages)
           stage.reset();
+      for (auto& channelStages : saturationFilters)
+        for (auto& stage : channelStages)
+          stage.reset();
+      saturationState = {};
       compEnvelope = 0.0f;
       compGainDb = 0.0f;
       compDetectorDb = -120.0f;
@@ -268,8 +274,10 @@ private:
     }
 
     std::array<std::array<EqFilterStage, eqMaxFilterStages>, 2> filters {};
-    std::array<EqFilterStage, 2> compDetectorFilters {};
+    std::array<std::array<EqFilterStage, 2>, 2> compDetectorFilters {};
     std::array<std::array<EqFilterStage, 2>, 2> soloFilters {};
+    std::array<std::array<EqFilterStage, 2>, 2> saturationFilters {};
+    SaturationState saturationState {};
     std::array<float, 2> deEsserLowStates {};
     float deEsserEnvelope = 0.0f;
     float deEsserGain = 1.0f;
@@ -293,13 +301,19 @@ private:
     int type = 0;
     float frequency = 1000.0f;
     float gainDb = 0.0f;
-    float q = 5.0f;
+    float q = 1.0f;
+    float rangeLowHz = 500.0f;
+    float rangeHighHz = 2000.0f;
+    float rangeLowSlope = 8.0f;
+    float rangeHighSlope = 8.0f;
     float compDb = 0.0f;
     float compThresholdDb = -18.0f;
     float compAttackMs = 12.0f;
     float compReleaseMs = 140.0f;
     float compRatio = 4.0f;
     bool compEnabled = false;
+    int saturationMode = 0;
+    float saturationAmount = 0.0f;
     bool solo = false;
     int slopeDb = 12;
     float thresholdDb = -24.0f;
@@ -314,7 +328,7 @@ private:
     std::vector<EqBandSettings> postBands;
   };
 
-  static constexpr int spectrumFftOrder = 11;
+  static constexpr int spectrumFftOrder = 12;
   static constexpr int spectrumFftSize = 1 << spectrumFftOrder;
   static constexpr int spectrumHopSize = spectrumFftSize / 4;
 
@@ -367,7 +381,9 @@ private:
   void configureEqBandSolo(EqBandState& state, const EqBandSettings& settings) const;
   void configureEqBandForGain(EqBandState& state, const EqBandSettings& settings, float gainDb) const;
   void configureEqBandCompressionDetector(EqBandState& state, const EqBandSettings& settings) const;
+  void configureEqBandSaturationFilter(EqBandState& state, const EqBandSettings& settings) const;
   float updateEqBandDetectorLevel(EqBandState& state, const EqBandSettings& settings, float left, float right) const;
+  void applyEqBandSaturation(EqBandState& state, const EqBandSettings& settings, float& left, float& right) const;
   void prepareEq(std::vector<EqBandState>& states, const std::vector<EqBandSettings>& settings) const;
   void applyEq(std::vector<EqBandState>& states, const std::vector<EqBandSettings>& settings, float& left,
                float& right, std::array<std::atomic<float>, eqMeterBandCount>& detectorDbMeters);
@@ -376,17 +392,30 @@ private:
   void resetEqStates(std::vector<EqBandState>& states);
   static bool eqBandHasEffect(const EqBandSettings& settings);
   static bool eqBandSupportsCompression(const EqBandSettings& settings);
+  static bool eqBandSupportsSaturation(const EqBandSettings& settings);
   static bool eqBandHasCompressionTarget(const EqBandSettings& settings);
   static bool eqBandHasCompression(const EqBandSettings& settings);
+  static bool eqBandHasSaturation(const EqBandSettings& settings);
   static bool eqBandsNeedPitchTracking(const std::vector<EqBandSettings>& settings);
   static int eqFilterStageCount(int slopeDb);
+  static bool eqCutHasFirstOrderStage(int slopeDb);
+  static int eqCutBiquadStageCount(int slopeDb);
+  static int eqBandFilterStageCount(const EqBandSettings& settings);
+  static float getCutResonanceFrequency(const EqBandSettings& settings);
+  static float getCutResonanceQ(const EqBandSettings& settings);
+  static float getFullSpectrumCenter(float lowHz, float highHz);
+  static std::array<float, 2> getFullSpectrumFallbackRange(float frequency, float q);
+  static std::array<float, 2> normalizeFullSpectrumRange(float frequency, float q, float lowHz, float highHz);
   float getSurferEqFrequency(EqBandState& state, const EqBandSettings& settings) const;
   static void setBiquadCoefficients(EqFilterStage& stage, float b0, float b1, float b2, float a0, float a1, float a2);
   void setPeakingFilter(EqFilterStage& stage, float frequency, float q, float gainDb) const;
   void setLowShelfFilter(EqFilterStage& stage, float frequency, float q, float gainDb) const;
   void setHighShelfFilter(EqFilterStage& stage, float frequency, float q, float gainDb) const;
   void setLowPassFilter(EqFilterStage& stage, float frequency, float q) const;
+  void setLowPassFirstOrderFilter(EqFilterStage& stage, float frequency) const;
   void setHighPassFilter(EqFilterStage& stage, float frequency, float q) const;
+  void setHighPassFirstOrderFilter(EqFilterStage& stage, float frequency) const;
+  void setCutResonanceFilter(EqFilterStage& stage, const EqBandSettings& settings, float gainDb) const;
   void setNotchFilter(EqFilterStage& stage, float frequency, float q) const;
   void setBandPassFilter(EqFilterStage& stage, float frequency, float q, float gainDb) const;
   CompressorResult applyPeakTamer(float left, float right, float thresholdDb, CompressorState& state) const;
@@ -414,6 +443,7 @@ private:
   std::atomic<float>* tuneKeyParam = nullptr;
   std::atomic<float>* tuneScaleParam = nullptr;
   std::atomic<float>* tuneCustomNotesParam = nullptr;
+  std::atomic<float>* tuneVoiceTypeParam = nullptr;
   std::atomic<float>* peakEnabledParam = nullptr;
   std::atomic<float>* peakThresholdParam = nullptr;
   std::atomic<float>* glueEnabledParam = nullptr;

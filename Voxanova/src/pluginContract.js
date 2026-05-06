@@ -9,7 +9,8 @@ export const EQ_FILTER_TYPES = [
   "Low Shelf",
   "High Shelf",
   "Notch",
-  "Band Pass"
+  "Band Pass",
+  "Full Spectrum"
 ];
 
 export const booleanParameters = [
@@ -40,15 +41,16 @@ export const defaultValues = {
   preSaturationAmount: 0,
   postSaturationMode: 0,
   postSaturationAmount: 0,
-  tuneEnabled: true,
+  tuneEnabled: false,
   tuneAmount: 82,
   tuneKey: 0,
   tuneScale: 1,
   tuneCustomNotes: 4095,
+  tuneVoiceType: 1,
   peakEnabled: true,
   peakThreshold: 0,
   glueEnabled: true,
-  glueMultiband: false,
+  glueMultiband: true,
   glueThreshold: 0,
   glueLowThreshold: 0,
   glueLowMidThreshold: 0,
@@ -59,7 +61,7 @@ export const defaultValues = {
   gateEnabled: true,
   deEsserEnabled: false,
   deEsserAmount: 35,
-  deEsserLow: 5500,
+  deEsserLow: 4700,
   deEsserHigh: 8500,
   stereoEnabled: false,
   reverbEnabled: false,
@@ -70,7 +72,7 @@ export const defaultValues = {
   reverbLowCut: 0,
   reverbHighCut: 100,
   reverbMode: 0,
-  reverbSync: true,
+  reverbSync: false,
   reverbNoteMode: 0,
   reverbDecaySync: true,
   reverbPredelaySync: true,
@@ -94,6 +96,7 @@ export const defaultValues = {
 
 export const saturationModes = ["Off", "1073", "Tape", "Tube"];
 export const autoTuneNotes = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
+export const autoTuneVoiceTypes = ['LOW MALE', 'TENOR', 'SOPRANO'];
 export const autoTuneScales = [
   'CUSTOM',
   'MAJ',

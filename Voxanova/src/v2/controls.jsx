@@ -1,5 +1,7 @@
 import React from "react";
 import { createPortal } from "react-dom";
+import { resetOnAltClick, resetOnDoubleClick } from "./controlReset.js";
+import { handleWheelValue } from "./wheelControl.js";
 
 // controls.jsx — bypass button, vfader, meters, selects, pills
 
@@ -14,11 +16,15 @@ function clamp(value, min, max) {
 }
 
 // ─── Bypass Button (replaces toggle) ─────────────────────────────────────────
-function BypassBtn({ on, onChange }) {
+function BypassBtn({ on, onChange, defaultValue }) {
   return (
     <button
       className={`bypass-btn ${on ? 'active' : 'bypassed'}`}
-      onClick={() => onChange(!on)}
+      onClick={(event) => {
+        if (resetOnAltClick(event, defaultValue !== undefined ? () => onChange(defaultValue) : null)) return;
+        onChange(!on);
+      }}
+      onDoubleClick={(event) => resetOnDoubleClick(event, defaultValue !== undefined ? () => onChange(defaultValue) : null)}
       title={on ? 'Bypass module' : 'Enable module'}
     >
       {on ? 'ON' : 'OFF'}
@@ -27,12 +33,13 @@ function BypassBtn({ on, onChange }) {
 }
 
 // ─── Vertical Fader ──────────────────────────────────────────────────────────
-function VFader({ value, onChange, min, max, ticks = [], unit = 'dB', height = 180, color = 'var(--accent)', invert = false, label }) {
+function VFader({ value, onChange, min, max, ticks = [], unit = 'dB', height = 180, color = 'var(--accent)', invert = false, label, defaultValue }) {
   const ref = uR(null);
   const [drag, setDrag] = uS(false);
   const norm = Math.max(0, Math.min(1, (value - min) / (max - min)));
 
   const onDown = (e) => {
+    if (resetOnAltClick(e, defaultValue !== undefined ? () => onChange(defaultValue) : null)) return;
     e.preventDefault();
     setDrag(true);
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -79,6 +86,8 @@ function VFader({ value, onChange, min, max, ticks = [], unit = 'dB', height = 1
           onPointerMove={onMove}
           onPointerUp={onUp}
           onPointerCancel={onUp}
+          onDoubleClick={(e) => resetOnDoubleClick(e, defaultValue !== undefined ? () => onChange(defaultValue) : null)}
+          onWheel={(e) => handleWheelValue(e, value, { min, max, step: 0.1 }, onChange)}
         >
           <div className="vfader-track" />
           <div className="vfader-fill" style={{
@@ -171,7 +180,7 @@ function LevelMeter({ active = true, intensity = 0.5, height = 180, threshold = 
 }
 
 // ─── Select dropdown ─────────────────────────────────────────────────────────
-function Select({ value, onChange, options, floating = false }) {
+function Select({ value, onChange, options, floating = false, defaultValue }) {
   const [open, setOpen] = uS(false);
   const [floatingStyle, setFloatingStyle] = uS(null);
   const ref = uR(null);
@@ -273,7 +282,15 @@ function Select({ value, onChange, options, floating = false }) {
 
   return (
     <div className={`select${open ? ' open' : ''}`} ref={ref}>
-      <button type="button" className="select-trigger" onClick={() => setOpen(o => !o)}>
+      <button
+        type="button"
+        className="select-trigger"
+        onClick={(event) => {
+          if (resetOnAltClick(event, defaultValue !== undefined ? () => { onChange(defaultValue); setOpen(false); } : null)) return;
+          setOpen(o => !o);
+        }}
+        onDoubleClick={(event) => resetOnDoubleClick(event, defaultValue !== undefined ? () => { onChange(defaultValue); setOpen(false); } : null)}
+      >
         <span>{value}</span>
         <svg width="8" height="8" viewBox="0 0 10 10"><path d="M2 4l3 3 3-3" stroke="currentColor" strokeWidth="1.3" fill="none" strokeLinecap="round" strokeLinejoin="round" /></svg>
       </button>
@@ -283,11 +300,21 @@ function Select({ value, onChange, options, floating = false }) {
 }
 
 // ─── Pill group ───────────────────────────────────────────────────────────────
-function PillGroup({ value, onChange, options, stretch = false }) {
+function PillGroup({ value, onChange, options, stretch = false, defaultValue }) {
   return (
     <div className={`pillgroup${stretch ? ' stretch' : ''}`}>
       {options.map(o => (
-        <button key={o} className={`pill${o === value ? ' active' : ''}`} onClick={() => onChange(o)}>{o}</button>
+        <button
+          key={o}
+          className={`pill${o === value ? ' active' : ''}`}
+          onClick={(event) => {
+            if (resetOnAltClick(event, defaultValue !== undefined ? () => onChange(defaultValue) : null)) return;
+            onChange(o);
+          }}
+          onDoubleClick={(event) => resetOnDoubleClick(event, defaultValue !== undefined ? () => onChange(defaultValue) : null)}
+        >
+          {o}
+        </button>
       ))}
     </div>
   );

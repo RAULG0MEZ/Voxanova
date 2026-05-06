@@ -1,4 +1,6 @@
 import React from "react";
+import { resetOnAltClick, resetOnDoubleClick } from "./controlReset.js";
+import { handleWheelValue, wheelDirection } from "./wheelControl.js";
 
 
 // tweaks-panel.jsx
@@ -84,13 +86,19 @@ const __TWEAKS_STYLE = `
     background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='rgba(0,0,0,.5)' d='M0 0h10L5 6z'/></svg>");
     background-repeat:no-repeat;background-position:right 8px center}
 
-  .twk-slider{appearance:none;-webkit-appearance:none;width:100%;height:4px;margin:6px 0;
-    border-radius:999px;background:rgba(0,0,0,.12);outline:none}
+  .twk-slider{appearance:none;-webkit-appearance:none;width:100%;height:24px;margin:2px 0;
+    border-radius:999px;background:transparent;outline:none}
+  .twk-slider::-webkit-slider-runnable-track{height:6px;border-radius:999px;background:rgba(0,0,0,.12)}
+  .twk-slider::-moz-range-track{height:6px;border-radius:999px;background:rgba(0,0,0,.12)}
   .twk-slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
-    width:14px;height:14px;border-radius:50%;background:#fff;
-    border:.5px solid rgba(0,0,0,.12);box-shadow:0 1px 3px rgba(0,0,0,.2);cursor:default}
-  .twk-slider::-moz-range-thumb{width:14px;height:14px;border-radius:50%;
-    background:#fff;border:.5px solid rgba(0,0,0,.12);box-shadow:0 1px 3px rgba(0,0,0,.2);cursor:default}
+    width:18px;height:18px;margin-top:-6px;border-radius:50%;background:#fff;
+    border:.5px solid rgba(0,0,0,.12);box-shadow:0 1px 3px rgba(0,0,0,.2);cursor:pointer;
+    transition:transform .12s cubic-bezier(.2,.8,.2,1),box-shadow .14s}
+  .twk-slider:hover::-webkit-slider-thumb,.twk-slider:active::-webkit-slider-thumb{transform:scale(1.05)}
+  .twk-slider::-moz-range-thumb{width:18px;height:18px;border-radius:50%;
+    background:#fff;border:.5px solid rgba(0,0,0,.12);box-shadow:0 1px 3px rgba(0,0,0,.2);cursor:default;
+    transition:transform .12s cubic-bezier(.2,.8,.2,1),box-shadow .14s}
+  .twk-slider:hover::-moz-range-thumb,.twk-slider:active::-moz-range-thumb{transform:scale(1.05)}
 
   .twk-seg{position:relative;display:flex;padding:2px;border-radius:8px;
     background:rgba(0,0,0,.06);user-select:none}
@@ -292,7 +300,8 @@ function TweakSlider({ label, value, min = 0, max = 100, step = 1, unit = '', on
   return (
     <TweakRow label={label} value={`${value}${unit}`}>
       <input type="range" className="twk-slider" min={min} max={max} step={step}
-             value={value} onChange={(e) => onChange(Number(e.target.value))} />
+             value={value} onChange={(e) => onChange(Number(e.target.value))}
+             onWheel={(e) => handleWheelValue(e, value, { min, max, step }, onChange)} />
     </TweakRow>
   );
 }
@@ -344,10 +353,18 @@ function TweakRadio({ label, value, options, onChange }) {
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
   };
+  const onWheel = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const nextIdx = Math.max(0, Math.min(n - 1, idx + wheelDirection(e)));
+    const next = opts[nextIdx]?.value;
+    if (next !== undefined && next !== valueRef.current) onChange(next);
+  };
 
   return (
     <TweakRow label={label}>
       <div ref={trackRef} role="radiogroup" onPointerDown={onPointerDown}
+           onWheel={onWheel}
            className={dragging ? 'twk-seg dragging' : 'twk-seg'}>
         <div className="twk-seg-thumb"
              style={{ left: `calc(2px + ${idx} * (100% - 4px) / ${n})`,
@@ -362,10 +379,16 @@ function TweakRadio({ label, value, options, onChange }) {
   );
 }
 
-function TweakSelect({ label, value, options, onChange }) {
+function TweakSelect({ label, value, options, onChange, defaultValue }) {
   return (
     <TweakRow label={label}>
-      <select className="twk-field" value={value} onChange={(e) => onChange(e.target.value)}>
+      <select
+        className="twk-field"
+        value={value}
+        onMouseDown={(event) => resetOnAltClick(event, defaultValue !== undefined ? () => onChange(defaultValue) : null)}
+        onDoubleClick={(event) => resetOnDoubleClick(event, defaultValue !== undefined ? () => onChange(defaultValue) : null)}
+        onChange={(e) => onChange(e.target.value)}
+      >
         {options.map((o) => {
           const v = typeof o === 'object' ? o.value : o;
           const l = typeof o === 'object' ? o.label : o;
@@ -413,6 +436,7 @@ function TweakNumber({ label, value, min, max, step = 1, unit = '', onChange }) 
     <div className="twk-num">
       <span className="twk-num-lbl" onPointerDown={onScrubStart}>{label}</span>
       <input type="number" value={value} min={min} max={max} step={step}
+             onWheel={(e) => handleWheelValue(e, value, { min, max, step }, (next) => onChange(clamp(next)))}
              onChange={(e) => onChange(clamp(Number(e.target.value)))} />
       {unit && <span className="twk-num-unit">{unit}</span>}
     </div>

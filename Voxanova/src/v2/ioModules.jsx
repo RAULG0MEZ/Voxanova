@@ -1,12 +1,14 @@
 import React from "react";
 import { BypassBtn, Select } from "./controls.jsx";
 import { Knob } from "./knob.jsx";
-import { autoTuneNotes, autoTuneScales } from "../pluginContract.js";
+import { resetOnAltClick, resetOnDoubleClick } from "./controlReset.js";
+import { autoTuneNotes, autoTuneScales, autoTuneVoiceTypes, defaultValues } from "../pluginContract.js";
 
 // AutoTune module — minimal compact
 
 const AT_NOTES = autoTuneNotes;
 const AT_SCALE_OPTIONS = autoTuneScales;
+const AT_VOICE_TYPES = autoTuneVoiceTypes;
 
 function maskToNotes(mask) {
   const rawMask = Number(mask);
@@ -101,7 +103,7 @@ function AutoTunePitchViz({ active, amount, key_, livePitch }) {
   );
 }
 
-function CustomNoteGrid({ notes, onToggle, disabled }) {
+function CustomNoteGrid({ notes, onToggle, onReset, disabled }) {
   return (
     <div className={`at-custom-notes${disabled ? ' disabled' : ''}`}>
       {AT_NOTES.map(note => {
@@ -111,7 +113,11 @@ function CustomNoteGrid({ notes, onToggle, disabled }) {
             key={note}
             type="button"
             className={`at-note-tile${active ? ' active' : ' muted'}`}
-            onClick={() => onToggle(note)}
+            onClick={(event) => {
+              if (resetOnAltClick(event, onReset)) return;
+              onToggle(note);
+            }}
+            onDoubleClick={(event) => resetOnDoubleClick(event, onReset)}
             disabled={disabled}
             aria-pressed={active}
           >
@@ -131,6 +137,8 @@ function AutoTuneModule({
   setKey,
   scale_,
   setScale,
+  voiceType,
+  setVoiceType,
   customMask,
   setCustomMask,
   on,
@@ -155,10 +163,15 @@ function AutoTuneModule({
     });
   };
 
+  const resetCustomNotes = () => {
+    setCustomNotes(maskToNotes(defaultValues.tuneCustomNotes));
+    setCustomMask?.(defaultValues.tuneCustomNotes);
+  };
+
   return (
     <div className={`io-unit at-unit${!on ? ' bypassed' : ''}`}>
       <div className="io-unit-header">
-        <BypassBtn on={on} onChange={setOn} />
+        <BypassBtn on={on} onChange={setOn} defaultValue={defaultValues.tuneEnabled} />
         <span className="mod-name">FAIRY DUST TUNE</span>
         <span className="io-unit-val">{formatRetunePitch(amount)}</span>
       </div>
@@ -170,16 +183,17 @@ function AutoTuneModule({
       />
       <div className="at-body">
         <Knob value={amount} onChange={setAmount} min={0} max={100} size={44}
-              defaultValue={82} color="var(--accent)" disabled={!on}
+              defaultValue={defaultValues.tuneAmount} color="var(--accent)" disabled={!on}
               label="RETUNE"
               format={formatRetunePitch} />
         <div className="at-selects">
-          <Select value={key_} onChange={setKey} options={AT_NOTES} floating />
-          <Select value={scale_} onChange={setScale} options={AT_SCALE_OPTIONS} floating />
+          <Select value={voiceType} onChange={setVoiceType} options={AT_VOICE_TYPES} defaultValue={AT_VOICE_TYPES[defaultValues.tuneVoiceType]} floating />
+          <Select value={key_} onChange={setKey} options={AT_NOTES} defaultValue={AT_NOTES[defaultValues.tuneKey]} floating />
+          <Select value={scale_} onChange={setScale} options={AT_SCALE_OPTIONS} defaultValue={AT_SCALE_OPTIONS[defaultValues.tuneScale]} floating />
         </div>
       </div>
       {scale_ === 'CUSTOM' && (
-        <CustomNoteGrid notes={customNotes} onToggle={toggleCustomNote} disabled={!on} />
+        <CustomNoteGrid notes={customNotes} onToggle={toggleCustomNote} onReset={resetCustomNotes} disabled={!on} />
       )}
     </div>
   );

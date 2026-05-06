@@ -1,14 +1,26 @@
 import React from "react";
 import { BypassBtn, PillGroup, Select } from "./controls.jsx";
 import { Knob } from "./knob.jsx";
-import { delayDivisions, delayStyles, reverbModes, reverbPredelayDivisions } from "../pluginContract.js";
+import { resetOnAltClick, resetOnDoubleClick } from "./controlReset.js";
+import { adjustWheelValue, handleWheelValue, wheelDirection } from "./wheelControl.js";
+import { defaultValues, delayDivisions, delayStyles, reverbModes, reverbPredelayDivisions } from "../pluginContract.js";
 
 // modules.jsx — Compressor modules with proper threshold/GR/output gain logic
 
-function ModuleHeader({ on, setOn, name }) {
+const EFFECT_LOW_CUT_DEFAULT = 20;
+const EFFECT_HIGH_CUT_DEFAULT = 20000;
+
+const glueBandDefaults = [
+  defaultValues.glueLowThreshold,
+  defaultValues.glueLowMidThreshold,
+  defaultValues.glueHighMidThreshold,
+  defaultValues.glueAirThreshold,
+];
+
+function ModuleHeader({ on, setOn, name, defaultOn }) {
   return (
     <div className="mod-header">
-      <BypassBtn on={on} onChange={setOn} />
+      <BypassBtn on={on} onChange={setOn} defaultValue={defaultOn} />
       <span className="mod-name" title={name}>{name}</span>
     </div>
   );
@@ -273,11 +285,12 @@ function CompWaveViz({ threshold, active, waveform }) {
   );
 }
 
-function RackThresholdSlider({ label = 'THR', value, min = -60, max = 0, onChange, format, className = '' }) {
+function RackThresholdSlider({ label = 'THR', value, min = -60, max = 0, onChange, format, className = '', handleClassName = 'rev-slider-handle', defaultValue }) {
   const norm = Math.max(0, Math.min(1, (value - min) / (max - min)));
   const display = format ? format(value) : `${value.toFixed(0)} dB`;
 
   const onPointerDown = (e) => {
+    if (resetOnAltClick(e, defaultValue !== undefined ? () => onChange(defaultValue) : null)) return;
     e.preventDefault();
     const target = e.currentTarget;
     target.setPointerCapture(e.pointerId);
@@ -299,9 +312,14 @@ function RackThresholdSlider({ label = 'THR', value, min = -60, max = 0, onChang
     <div className={`rev-size-row rack-threshold-row${className ? ` ${className}` : ''}`}>
       <span className="rev-size-lbl rack-threshold-lbl">{label}</span>
       <div className="rev-slider rack-threshold-slider">
-        <div className="rev-slider-track" onPointerDown={onPointerDown}>
+        <div
+          className="rev-slider-track"
+          onPointerDown={onPointerDown}
+          onDoubleClick={(e) => resetOnDoubleClick(e, defaultValue !== undefined ? () => onChange(defaultValue) : null)}
+          onWheel={(event) => handleWheelValue(event, value, { min, max, step: 0.5 }, onChange)}
+        >
           <div className="rev-slider-fill" style={{ width: `${norm * 100}%` }} />
-          <div className="rev-slider-handle" style={{ left: `${norm * 100}%` }} />
+          <div className={handleClassName} style={{ left: `${norm * 100}%` }} />
         </div>
         <span className="rev-size-val rack-threshold-val">{display}</span>
       </div>
@@ -315,16 +333,16 @@ function CompModule({ name, threshold, setThreshold, on, setOn, signalActive, wa
   const grPct = gainReductionPercent(reduction, grDb);
 
   return (
-    <div className={`comp-unit${!on ? ' bypassed' : ''}`}>
+      <div className={`comp-unit${!on ? ' bypassed' : ''}`}>
       <div className="comp-unit-header">
-        <BypassBtn on={on} onChange={setOn} />
+        <BypassBtn on={on} onChange={setOn} defaultValue={defaultValues.peakEnabled} />
         <span className="mod-name">{name}</span>
       </div>
       <div className="comp-unit-body">
         <div className="comp-wave-wrap">
           <CompWaveViz threshold={threshold} active={signalActive && on} waveform={waveform} />
         </div>
-        <RackThresholdSlider value={threshold} onChange={setThreshold} />
+        <RackThresholdSlider value={threshold} onChange={setThreshold} defaultValue={defaultValues.peakThreshold} />
         <div className="comp-fader-row gr">
           <span className="comp-fader-lbl">GR</span>
           <div className="comp-gr-track">
@@ -337,11 +355,11 @@ function CompModule({ name, threshold, setThreshold, on, setOn, signalActive, wa
   );
 }
 
-function MultiButterThreshold({ label, value, onChange, grValue = 0 }) {
+function MultiButterThreshold({ label, value, onChange, grValue = 0, defaultValue }) {
   const grPct = Math.min(100, (grValue / 20) * 100);
   return (
     <div className="multi-band-control">
-      <RackThresholdSlider label={label} value={value} onChange={onChange} className="multi-thr-row" />
+      <RackThresholdSlider label={label} value={value} onChange={onChange} className="multi-thr-row" defaultValue={defaultValue} />
       <div className="multi-gr-row">
         <span className="multi-gr-lbl">GR</span>
         <div className="multi-gr-track">
@@ -363,14 +381,15 @@ function ButterCompModule({ mode, setMode, threshold, setThreshold, multiThresho
   };
 
   return (
-    <div className={`comp-unit butter-unit${!on ? ' bypassed' : ''}${isMulti ? ' multi' : ''}`}>
+      <div className={`comp-unit butter-unit${!on ? ' bypassed' : ''}${isMulti ? ' multi' : ''}`}>
       <div className="comp-unit-header butter-unit-header">
-        <BypassBtn on={on} onChange={setOn} />
+        <BypassBtn on={on} onChange={setOn} defaultValue={defaultValues.glueEnabled} />
         <div className="butter-mode-tabs">
           <PillGroup
             value={mode}
             onChange={setMode}
-            options={['BUTTER COMP', 'MULTI BUTTER']}
+            options={['MULTI BUTTER', 'BUTTER COMP']}
+            defaultValue={defaultValues.glueMultiband ? 'MULTI BUTTER' : 'BUTTER COMP'}
             stretch
           />
         </div>
@@ -384,6 +403,7 @@ function ButterCompModule({ mode, setMode, threshold, setThreshold, multiThresho
               value={multiThresholds[idx]}
               onChange={value => updateBand(idx, value)}
               grValue={Math.max(0, Math.abs(Number(bandReductionDbs[idx]) || 0))}
+              defaultValue={glueBandDefaults[idx]}
             />
           ))}
         </div>
@@ -392,7 +412,7 @@ function ButterCompModule({ mode, setMode, threshold, setThreshold, multiThresho
         <div className="comp-wave-wrap">
           <CompWaveViz threshold={threshold} active={signalActive && on} waveform={waveform} />
         </div>
-          <RackThresholdSlider value={threshold} onChange={setThreshold} />
+          <RackThresholdSlider value={threshold} onChange={setThreshold} defaultValue={defaultValues.glueThreshold} />
           <div className="comp-fader-row gr">
             <span className="comp-fader-lbl">GR</span>
             <div className="comp-gr-track">
@@ -454,7 +474,7 @@ function IYFViz({ active, amount, waveform }) {
 }
 
 // ─── In Your Face (presence/saturation) ──────────────────────────────────────
-function PctModule({ name, value, onChange, on, setOn, signalActive, compact = false, waveform }) {
+function PctModule({ name, value, onChange, on, setOn, signalActive, compact = false, waveform, defaultValue = defaultValues.faceThreshold }) {
   const amount = Math.max(0, Math.min(100, Number(value) || 0));
   const ladderBars = 19;
   const ladderProgress = (amount / 100) * ladderBars;
@@ -464,6 +484,7 @@ function PctModule({ name, value, onChange, on, setOn, signalActive, compact = f
     onChange(Math.max(0, Math.min(100, next)));
   };
   const onGraphPointerDown = (event) => {
+    if (resetOnAltClick(event, defaultValue !== undefined ? () => onChange(defaultValue) : null)) return;
     event.preventDefault();
     const target = event.currentTarget;
     target.setPointerCapture?.(event.pointerId);
@@ -500,7 +521,7 @@ function PctModule({ name, value, onChange, on, setOn, signalActive, compact = f
     return (
       <div className={`comp-unit comp-unit-mini iyf-unit${!on ? ' bypassed' : ''}`}>
         <div className="comp-unit-header">
-          <BypassBtn on={on} onChange={setOn} />
+          <BypassBtn on={on} onChange={setOn} defaultValue={defaultValues.faceEnabled} />
           <span className="mod-name">{name}</span>
           <span className="iyf-unit-value">{Math.round(amount)}%</span>
         </div>
@@ -519,7 +540,9 @@ function PctModule({ name, value, onChange, on, setOn, signalActive, compact = f
               '--iyf-glow': amount > 0 ? Math.min(1, 0.18 + amount / 64).toFixed(3) : '0',
             }}
             onPointerDown={onGraphPointerDown}
+            onDoubleClick={(event) => resetOnDoubleClick(event, defaultValue !== undefined ? () => onChange(defaultValue) : null)}
             onKeyDown={onGraphKeyDown}
+            onWheel={(event) => handleWheelValue(event, amount, { min: 0, max: 100, step: 1 }, onChange)}
           >
             {Array.from({ length: ladderBars }).map((_, i) => {
               const fill = Math.max(0, Math.min(1, ladderProgress - i));
@@ -554,7 +577,7 @@ function PctModule({ name, value, onChange, on, setOn, signalActive, compact = f
   return (
     <div className={`comp-unit${!on ? ' bypassed' : ''}`}>
       <div className="comp-unit-header">
-        <BypassBtn on={on} onChange={setOn} />
+        <BypassBtn on={on} onChange={setOn} defaultValue={defaultValues.faceEnabled} />
           <span className="mod-name">{name}</span>
           <div className="comp-unit-meta">
           <span className="comp-meta-val">{Math.round(amount)}%</span>
@@ -568,6 +591,7 @@ function PctModule({ name, value, onChange, on, setOn, signalActive, compact = f
             <span className="comp-fader-lbl">AMT</span>
           <div className="comp-fader-track"
             onPointerDown={(e) => {
+              if (resetOnAltClick(e, defaultValue !== undefined ? () => onChange(defaultValue) : null)) return;
               e.preventDefault();
               const target = e.currentTarget;
               target.setPointerCapture(e.pointerId);
@@ -581,6 +605,8 @@ function PctModule({ name, value, onChange, on, setOn, signalActive, compact = f
               window.addEventListener('pointermove', move);
               window.addEventListener('pointerup', up);
             }}
+            onDoubleClick={(e) => resetOnDoubleClick(e, defaultValue !== undefined ? () => onChange(defaultValue) : null)}
+            onWheel={(event) => handleWheelValue(event, amount, { min: 0, max: 100, step: 1 }, onChange)}
           >
             <div className="comp-fader-fill" style={{ width: `${amount}%` }} />
             <div className="comp-fader-handle" style={{ left: `${amount}%` }} />
@@ -626,7 +652,17 @@ const DESSER_BAND_MAX = 12000;
 const DESSER_MIN_GAP = 400;
 const DESSER_BAND_TICKS = [3000, 4000, 6000, 8000, 10000];
 
-function DesserBand({ low, high, amount = 0, spectrum = [], onLowChange, onHighChange, active }) {
+function DesserBand({
+  low,
+  high,
+  amount = 0,
+  spectrum = [],
+  onLowChange,
+  onHighChange,
+  active,
+  defaultLow = defaultValues.deEsserLow,
+  defaultHigh = defaultValues.deEsserHigh,
+}) {
   const trackRef = React.useRef(null);
   const min = DESSER_BAND_MIN;
   const max = DESSER_BAND_MAX;
@@ -666,6 +702,10 @@ function DesserBand({ low, high, amount = 0, spectrum = [], onLowChange, onHighC
   }, [active, amountNorm, high, low, spectrum]);
 
   const dragBand = (e) => {
+    if (resetOnAltClick(e, () => {
+      onLowChange(defaultLow);
+      onHighChange(defaultHigh);
+    })) return;
     e.preventDefault();
     e.stopPropagation();
     const track = trackRef.current;
@@ -696,8 +736,23 @@ function DesserBand({ low, high, amount = 0, spectrum = [], onLowChange, onHighC
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
   };
+  const onBandWheel = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const startLow = Math.max(min, Math.min(max - DESSER_MIN_GAP, Number(low) || min));
+    const startHigh = Math.min(max, Math.max(startLow + DESSER_MIN_GAP, Number(high) || max));
+    const bandWidth = startHigh - startLow;
+    const step = e.shiftKey || e.altKey ? 50 : 150;
+    const nextLow = Math.max(min, Math.min(max - bandWidth, startLow + wheelDirection(e) * step));
+    onLowChange(Math.round(nextLow));
+    onHighChange(Math.round(nextLow + bandWidth));
+  };
 
   const dragThumb = (which) => (e) => {
+    if (resetOnAltClick(e, () => {
+      if (which === 'low') onLowChange(defaultLow);
+      else onHighChange(defaultHigh);
+    })) return;
     e.preventDefault();
     e.stopPropagation();
     const track = trackRef.current;
@@ -722,6 +777,18 @@ function DesserBand({ low, high, amount = 0, spectrum = [], onLowChange, onHighC
     };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
+  };
+  const onThumbWheel = (which) => (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const step = e.shiftKey || e.altKey ? 50 : 150;
+    if (which === 'low') {
+      const next = adjustWheelValue(low, { min, max: high - DESSER_MIN_GAP, step, event: e });
+      onLowChange(Math.round(next));
+    } else {
+      const next = adjustWheelValue(high, { min: low + DESSER_MIN_GAP, max, step, event: e });
+      onHighChange(Math.round(next));
+    }
   };
 
   return (
@@ -749,6 +816,11 @@ function DesserBand({ low, high, amount = 0, spectrum = [], onLowChange, onHighC
           className="desser-band-region"
           style={{ left: `${lowNorm * 100}%`, width: `${Math.max(0, highNorm - lowNorm) * 100}%` }}
           onPointerDown={dragBand}
+          onDoubleClick={(e) => resetOnDoubleClick(e, () => {
+            onLowChange(defaultLow);
+            onHighChange(defaultHigh);
+          })}
+          onWheel={onBandWheel}
           title="Move de-esser band"
         />
         <button
@@ -756,6 +828,8 @@ function DesserBand({ low, high, amount = 0, spectrum = [], onLowChange, onHighC
           className="desser-thumb low"
           style={{ left: `${lowNorm * 100}%` }}
           onPointerDown={dragThumb('low')}
+          onDoubleClick={(e) => resetOnDoubleClick(e, () => onLowChange(defaultLow))}
+          onWheel={onThumbWheel('low')}
           aria-label={`Low edge ${(low / 1000).toFixed(1)} kHz`}
           title={`${(low / 1000).toFixed(1)} kHz`}
         />
@@ -764,6 +838,8 @@ function DesserBand({ low, high, amount = 0, spectrum = [], onLowChange, onHighC
           className="desser-thumb high"
           style={{ left: `${highNorm * 100}%` }}
           onPointerDown={dragThumb('high')}
+          onDoubleClick={(e) => resetOnDoubleClick(e, () => onHighChange(defaultHigh))}
+          onWheel={onThumbWheel('high')}
           aria-label={`High edge ${(high / 1000).toFixed(1)} kHz`}
           title={`${(high / 1000).toFixed(1)} kHz`}
         />
@@ -782,14 +858,14 @@ function DesserBand({ low, high, amount = 0, spectrum = [], onLowChange, onHighC
 function GateModule({ threshold, setThreshold, on, setOn, signalActive, compact = false, waveform }) {
   if (compact) {
     return (
-      <div className={`comp-unit comp-unit-mini${!on ? ' bypassed' : ''}`}>
+      <div className={`comp-unit comp-unit-mini gate-unit${!on ? ' bypassed' : ''}`}>
         <div className="comp-unit-header">
-          <BypassBtn on={on} onChange={setOn} />
+          <BypassBtn on={on} onChange={setOn} defaultValue={defaultValues.gateEnabled} />
           <span className="mod-name">GATE KEEPER</span>
           <GateLED threshold={threshold} active={signalActive && on} />
         </div>
         <div className="comp-unit-body">
-          <RackThresholdSlider value={threshold} min={-80} onChange={setThreshold} />
+          <RackThresholdSlider value={threshold} min={-80} onChange={setThreshold} handleClassName="comp-fader-handle" defaultValue={defaultValues.gateThreshold} />
         </div>
       </div>
     );
@@ -798,14 +874,14 @@ function GateModule({ threshold, setThreshold, on, setOn, signalActive, compact 
   return (
     <div className={`comp-unit${!on ? ' bypassed' : ''}`}>
       <div className="comp-unit-header">
-        <BypassBtn on={on} onChange={setOn} />
+        <BypassBtn on={on} onChange={setOn} defaultValue={defaultValues.gateEnabled} />
         <span className="mod-name">GATE KEEPER (SHUT UP!)</span>
       </div>
       <div className="comp-unit-body">
         <div className="comp-wave-wrap">
           <GateWaveViz threshold={threshold} active={signalActive && on} waveform={waveform} />
         </div>
-        <RackThresholdSlider value={threshold} min={-80} onChange={setThreshold} />
+        <RackThresholdSlider value={threshold} min={-80} onChange={setThreshold} defaultValue={defaultValues.gateThreshold} />
       </div>
     </div>
   );
@@ -815,7 +891,7 @@ function DeEsserModule({ low = 5500, high = 8500, reduction, setLow, setHigh, se
   return (
     <div className={`comp-unit comp-unit-mini desser-unit${!on ? ' bypassed' : ''}`}>
       <div className="comp-unit-header">
-        <BypassBtn on={on} onChange={setOn} />
+        <BypassBtn on={on} onChange={setOn} defaultValue={defaultValues.deEsserEnabled} />
         <span className="mod-name">DE-ESSER</span>
         <span className="desser-range-readout">
           {(low / 1000).toFixed(1)}–{(high / 1000).toFixed(1)} kHz
@@ -830,6 +906,8 @@ function DeEsserModule({ low = 5500, high = 8500, reduction, setLow, setHigh, se
           onLowChange={setLow}
           onHighChange={setHigh}
           active={signalActive && on}
+          defaultLow={defaultValues.deEsserLow}
+          defaultHigh={defaultValues.deEsserHigh}
         />
         <RackThresholdSlider
           label="RED"
@@ -838,6 +916,7 @@ function DeEsserModule({ low = 5500, high = 8500, reduction, setLow, setHigh, se
           max={100}
           onChange={setReduction}
           format={(v) => `−${Math.round(v)}%`}
+          defaultValue={defaultValues.deEsserAmount}
         />
       </div>
     </div>
@@ -938,16 +1017,16 @@ function GateWaveViz({ threshold, active, waveform }) {
 function StereoModule({ width, setWidth, lowBypass, setLowBypass, on, setOn }) {
   return (
     <div className={`stereo-unit${!on ? ' bypassed' : ''}`}>
-      <ModuleHeader on={on} setOn={setOn} name="STEREOIDS" />
+      <ModuleHeader on={on} setOn={setOn} name="STEREOIDS" defaultOn={defaultValues.stereoEnabled} />
       <div className="stereo-body">
         <div className="stereo-knob-col">
           <Knob value={width} onChange={setWidth} min={0} max={200} size={48}
-                defaultValue={100} color="var(--accent)" format={v => `${Math.round(v)}%`} disabled={!on} />
+                defaultValue={defaultValues.stereoWidth} color="var(--accent)" format={v => `${Math.round(v)}%`} disabled={!on} />
           <div className="stereo-knob-label">WIDTH</div>
         </div>
         <div className="stereo-knob-col">
           <Knob value={lowBypass} onChange={setLowBypass} min={0} max={20000} size={42}
-                defaultValue={0} color="var(--neutral-knob)"
+                defaultValue={defaultValues.stereoLowBypass} color="var(--neutral-knob)"
                 format={v => v < 1000 ? `${Math.round(v)}Hz` : `${(v/1000).toFixed(1)}k`}
                 disabled={!on} />
           <div className="stereo-knob-label">LOW BYPASS</div>
@@ -972,41 +1051,49 @@ function DelayModule({ state, set, on, setOn }) {
   return (
     <div className={`module fx-module${!on ? ' bypassed' : ''}`}>
       <div className="fx-head">
-        <ModuleHeader on={on} setOn={setOn} name="DELAY" />
-        <Select value={state.preset} onChange={v => set({ preset: v })} options={delayStyles} floating />
+        <ModuleHeader on={on} setOn={setOn} name="DELAY" defaultOn={defaultValues.delayEnabled} />
+        <Select value={state.preset} onChange={v => set({ preset: v })} options={delayStyles} defaultValue={delayStyles[defaultValues.delayStyle]} floating />
       </div>
       <div className="fx-knobs">
         <Knob value={state.mix} onChange={v => set({ mix: v })} min={0} max={100} size={40}
-              color="var(--neutral-knob)" disabled={!on} format={v => `${Math.round(v)}%`} label="MIX" defaultValue={20} />
+              color="var(--neutral-knob)" disabled={!on} format={v => `${Math.round(v)}%`} label="MIX" defaultValue={defaultValues.delayMix} />
         <Knob value={timeValue} onChange={v => bpmOn ? set({ timeIdx: v }) : set({ timeMs: v })} min={bpmOn ? 0 : 1} max={timeMax} size={48}
-              color="var(--accent)" disabled={!on} format={timeFormat} label="TIME" defaultValue={bpmOn ? 2 : 500} />
+              color="var(--accent)" disabled={!on} format={timeFormat} label="TIME" defaultValue={bpmOn ? defaultValues.delayDivision : defaultValues.delayTimeMs} />
         <Knob value={state.feedback} onChange={v => set({ feedback: v })} min={0} max={100} size={40}
-              color="var(--accent-soft)" disabled={!on} format={v => `${Math.round(v)}%`} label="FEEDBACK" defaultValue={25} />
+              color="var(--accent-soft)" disabled={!on} format={v => `${Math.round(v)}%`} label="FEEDBACK" defaultValue={defaultValues.delayFeedback} />
       </div>
       <div className="fx-tab-align-spacer" aria-hidden="true" />
       <div className="fx-pills-row">
-        <PillGroup value={state.mode} onChange={v => set({ mode: v })} options={modes} stretch />
+        <PillGroup value={state.mode} onChange={v => set({ mode: v })} options={modes} defaultValue={modes[defaultValues.delayNoteMode] || 'NOTE'} stretch />
       </div>
       <div className="fx-pills-row">
-        <PillGroup value={state.type} onChange={v => set({ type: v })} options={types} stretch />
+        <PillGroup value={state.type} onChange={v => set({ type: v })} options={types} defaultValue={types[defaultValues.delayMode] || 'NORMAL'} stretch />
       </div>
       <div className="fx-ping fx-ping-dual">
         <button
           className={`ping-btn${bpmOn ? ' active' : ''}`}
-          onClick={() => set({ bpm: !bpmOn })}
+          onClick={(event) => {
+            if (resetOnAltClick(event, () => set({ bpm: defaultValues.delaySync }))) return;
+            set({ bpm: !bpmOn });
+          }}
+          onDoubleClick={(event) => resetOnDoubleClick(event, () => set({ bpm: defaultValues.delaySync }))}
           disabled={!on}
         >BPM</button>
         <button
           className={`ping-btn${postReverb ? ' active' : ''}`}
-          onClick={() => set({ postReverb: !postReverb })}
+          onClick={(event) => {
+            if (resetOnAltClick(event, () => set({ postReverb: defaultValues.delayPostReverb }))) return;
+            set({ postReverb: !postReverb });
+          }}
+          onDoubleClick={(event) => resetOnDoubleClick(event, () => set({ postReverb: defaultValues.delayPostReverb }))}
           disabled={!on}
         >POST RVB</button>
       </div>
       <div className="fx-cuts">
         <Knob value={state.lowCut} onChange={v => set({ lowCut: v })} min={20} max={500} size={34}
-              color="var(--accent)" disabled={!on} format={v => `${Math.round(v)}Hz`} label="LOW CUT" />
+              color="var(--accent)" disabled={!on} format={v => `${Math.round(v)}Hz`} label="LOW CUT" defaultValue={EFFECT_LOW_CUT_DEFAULT} />
         <Knob value={state.highCut} onChange={v => set({ highCut: v })} min={2000} max={20000} size={34}
-              color="var(--accent)" disabled={!on} format={v => v >= 1000 ? `${(v/1000).toFixed(1)}k` : `${Math.round(v)}`} label="HIGH CUT" />
+              color="var(--accent)" disabled={!on} format={v => v >= 1000 ? `${(v/1000).toFixed(1)}k` : `${Math.round(v)}`} label="HIGH CUT" defaultValue={EFFECT_HIGH_CUT_DEFAULT} />
       </div>
     </div>
   );
@@ -1026,22 +1113,23 @@ function ReverbModule({ state, set, on, setOn }) {
   return (
     <div className={`module fx-module${!on ? ' bypassed' : ''}`}>
       <div className="fx-head">
-        <ModuleHeader on={on} setOn={setOn} name="REVERB" />
-        <Select value={state.preset} onChange={v => set({ preset: v })} options={reverbModes} floating />
+        <ModuleHeader on={on} setOn={setOn} name="REVERB" defaultOn={defaultValues.reverbEnabled} />
+        <Select value={state.preset} onChange={v => set({ preset: v })} options={reverbModes} defaultValue={reverbModes[defaultValues.reverbMode]} floating />
       </div>
       <div className="fx-knobs">
         <Knob value={state.mix} onChange={v => set({ mix: v })} min={0} max={100} size={40}
-              color="var(--neutral-knob)" disabled={!on} format={v => `${Math.round(v)}%`} label="MIX" defaultValue={18} />
+              color="var(--neutral-knob)" disabled={!on} format={v => `${Math.round(v)}%`} label="MIX" defaultValue={defaultValues.reverbMix} />
         <Knob value={decayValue} onChange={v => decaySynced ? set({ decayIdx: v }) : set({ decay: v })} min={0} max={decaySynced ? delayDivisions.length - 1 : 100} size={48}
-              color="var(--accent)" disabled={!on} format={v => decaySynced ? (delayDivisions[Math.round(v)] || '1/4') : formatReverbDecay(v)} label="DECAY" defaultValue={decaySynced ? 2 : 72} />
+              color="var(--accent)" disabled={!on} format={v => decaySynced ? (delayDivisions[Math.round(v)] || '1/4') : formatReverbDecay(v)} label="DECAY" defaultValue={decaySynced ? defaultValues.reverbDecayDivision : defaultValues.reverbDecay} />
         <Knob value={preDelayValue} onChange={v => preDelaySynced ? set({ preDelayIdx: v }) : set({ preDelay: v })} min={0} max={preDelaySynced ? reverbPredelayDivisions.length - 1 : 100} size={40}
-              color="var(--accent-soft)" disabled={!on} format={v => preDelaySynced ? (reverbPredelayDivisions[Math.round(v)] || 'None') : formatPredelayMs(v)} label="PRE DLY" defaultValue={0} />
+              color="var(--accent-soft)" disabled={!on} format={v => preDelaySynced ? (reverbPredelayDivisions[Math.round(v)] || 'None') : formatPredelayMs(v)} label="PRE DLY" defaultValue={preDelaySynced ? defaultValues.reverbPredelayDivision : defaultValues.reverbPredelay} />
       </div>
       <div className="rev-size-row reverb-size-row">
         <span className="rev-size-lbl">SIZE</span>
         <div className="rev-slider">
           <div className="rev-slider-track"
             onPointerDown={(e) => {
+              if (resetOnAltClick(e, () => set({ size: defaultValues.reverbSize }))) return;
               e.preventDefault();
               const target = e.currentTarget;
               target.setPointerCapture(e.pointerId);
@@ -1055,6 +1143,8 @@ function ReverbModule({ state, set, on, setOn }) {
               window.addEventListener('pointermove', move);
               window.addEventListener('pointerup', up);
             }}
+            onDoubleClick={(e) => resetOnDoubleClick(e, () => set({ size: defaultValues.reverbSize }))}
+            onWheel={(event) => handleWheelValue(event, state.size, { min: 0, max: 100, step: 1 }, (size) => set({ size }))}
           >
             <div className="rev-slider-fill" style={{ width: `${state.size}%` }} />
             <div className="rev-slider-handle" style={{ left: `${state.size}%` }} />
@@ -1064,30 +1154,42 @@ function ReverbModule({ state, set, on, setOn }) {
       </div>
       <div className="fx-tab-align-spacer" aria-hidden="true" />
       <div className="fx-pills-row">
-        <PillGroup value={state.mode} onChange={v => set({ mode: v })} options={modes} stretch />
+        <PillGroup value={state.mode} onChange={v => set({ mode: v })} options={modes} defaultValue={modes[defaultValues.reverbNoteMode] || 'NOTE'} stretch />
       </div>
       <div className="fx-ping fx-ping-triple">
         <button
           className={`ping-btn${bpmOn ? ' active' : ''}`}
-          onClick={() => set({ bpm: !bpmOn, preDelaySync: !bpmOn ? true : preDelaySync })}
+          onClick={(event) => {
+            if (resetOnAltClick(event, () => set({ bpm: defaultValues.reverbSync }))) return;
+            set({ bpm: !bpmOn, preDelaySync: !bpmOn ? true : preDelaySync });
+          }}
+          onDoubleClick={(event) => resetOnDoubleClick(event, () => set({ bpm: defaultValues.reverbSync }))}
           disabled={!on}
         >BPM</button>
         <button
           className={`ping-btn${decaySync ? ' active' : ''}`}
-          onClick={() => set({ decaySync: !decaySync, bpm: !decaySync ? true : bpmOn })}
+          onClick={(event) => {
+            if (resetOnAltClick(event, () => set({ decaySync: defaultValues.reverbDecaySync }))) return;
+            set({ decaySync: !decaySync, bpm: !decaySync ? true : bpmOn });
+          }}
+          onDoubleClick={(event) => resetOnDoubleClick(event, () => set({ decaySync: defaultValues.reverbDecaySync }))}
           disabled={!on}
         >DECAY</button>
         <button
           className={`ping-btn${preDelaySync ? ' active' : ''}`}
-          onClick={() => set({ preDelaySync: !preDelaySync, bpm: !preDelaySync ? true : bpmOn })}
+          onClick={(event) => {
+            if (resetOnAltClick(event, () => set({ preDelaySync: defaultValues.reverbPredelaySync }))) return;
+            set({ preDelaySync: !preDelaySync, bpm: !preDelaySync ? true : bpmOn });
+          }}
+          onDoubleClick={(event) => resetOnDoubleClick(event, () => set({ preDelaySync: defaultValues.reverbPredelaySync }))}
           disabled={!on}
         >PRE</button>
       </div>
       <div className="fx-cuts">
         <Knob value={state.lowCut} onChange={v => set({ lowCut: v })} min={20} max={500} size={34}
-              color="var(--accent)" disabled={!on} format={v => `${Math.round(v)}Hz`} label="LOW CUT" />
+              color="var(--accent)" disabled={!on} format={v => `${Math.round(v)}Hz`} label="LOW CUT" defaultValue={EFFECT_LOW_CUT_DEFAULT} />
         <Knob value={state.highCut} onChange={v => set({ highCut: v })} min={2000} max={20000} size={34}
-              color="var(--accent)" disabled={!on} format={v => v >= 1000 ? `${(v/1000).toFixed(1)}k` : `${Math.round(v)}`} label="HIGH CUT" />
+              color="var(--accent)" disabled={!on} format={v => v >= 1000 ? `${(v/1000).toFixed(1)}k` : `${Math.round(v)}`} label="HIGH CUT" defaultValue={EFFECT_HIGH_CUT_DEFAULT} />
       </div>
     </div>
   );

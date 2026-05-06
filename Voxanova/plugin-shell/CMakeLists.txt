@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(Voxanova VERSION 0.1.102)
+project(Voxanova VERSION 0.1.104)
 
 if(NOT DEFINED JUCE_DIR)
   message(FATAL_ERROR "Set JUCE_DIR to your local JUCE checkout before configuring this target.")

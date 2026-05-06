@@ -1,9 +1,11 @@
 import React from "react";
+import { resetOnAltClick, resetOnDoubleClick } from "./controlReset.js";
+import { handleWheelValue } from "./wheelControl.js";
 
 // Minimalist elegant knob — arc track only, no 3D body
 const { useState, useRef } = React;
 
-function Knob({ value, onChange, min = 0, max = 100, size = 48, label, unit = '', color = 'var(--accent)', format, defaultValue, disabled = false }) {
+function Knob({ value, onChange, min = 0, max = 100, step, size = 48, label, unit = '', color = 'var(--accent)', format, defaultValue, disabled = false }) {
   const [dragging, setDragging] = useState(false);
   const startRef = useRef({ y: 0, val: 0 });
 
@@ -15,7 +17,11 @@ function Knob({ value, onChange, min = 0, max = 100, size = 48, label, unit = ''
   const angle = startAngle + norm * sweepAngle;
 
   const onPointerDown = (e) => {
-    if (disabled) return;
+    if (resetOnAltClick(e, defaultValue !== undefined ? () => onChange(defaultValue) : null)) return;
+    if (disabled) {
+      e.preventDefault();
+      return;
+    }
     e.preventDefault();
     startRef.current = { y: e.clientY, val: value };
     setDragging(true);
@@ -34,8 +40,12 @@ function Knob({ value, onChange, min = 0, max = 100, size = 48, label, unit = ''
       // Pointer capture can already be gone after cancellation.
     }
   };
-  const onDoubleClick = () => {
-    if (!disabled && defaultValue !== undefined) onChange(defaultValue);
+  const onDoubleClick = (event) => {
+    resetOnDoubleClick(event, defaultValue !== undefined ? () => onChange(defaultValue) : null);
+  };
+  const onWheel = (e) => {
+    if (disabled) return;
+    handleWheelValue(e, value, { min, max, step }, onChange);
   };
 
   const r = size / 2 - 4;
@@ -54,7 +64,7 @@ function Knob({ value, onChange, min = 0, max = 100, size = 48, label, unit = ''
   const display = format ? format(value) : `${value >= 0 && unit !== '%' ? '' : ''}${typeof value === 'number' ? (Number.isInteger(value) ? value : value.toFixed(1)) : value}${unit}`;
 
   return (
-    <div className={`knob-wrap${disabled ? ' disabled' : ''}`}>
+    <div className={`knob-wrap${disabled ? ' disabled' : ''}`} onWheel={onWheel}>
       <svg
         width={size}
         height={size}
@@ -65,6 +75,7 @@ function Knob({ value, onChange, min = 0, max = 100, size = 48, label, unit = ''
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
         onDoubleClick={onDoubleClick}
+        onWheel={onWheel}
       >
         {/* Track bg */}
         <path
