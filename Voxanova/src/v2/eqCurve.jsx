@@ -182,7 +182,7 @@ function EQCurve({
   const CUT_TYPES = new Set(['Low Cut', 'High Cut']);
   const DYNAMIC_EQ_TYPES = new Set(['Bell', 'Surfer Bell', 'Low Shelf', 'High Shelf', 'Band Pass', FULL_SPECTRUM_TYPE]);
   const SLOPE_TYPES = new Set(['Low Cut', 'High Cut', 'Low Shelf', 'High Shelf']);
-  const CUT_NODE_GAIN_DISPLAY_RATIO = 0.42;
+  const CUT_NODE_GAIN_DISPLAY_RATIO = 0.72;
   const WALL_SLOPE = 'wall';
   const SLOPE_OPTIONS = [6, 12, 18, 24, 36, 48];
   const CUT_SLOPE_OPTIONS = [6, 12, 18, 24, 30, 36, 48, 72, 96, WALL_SLOPE];
@@ -957,7 +957,11 @@ function EQCurve({
   };
 
   const filterFrequency = (frequency) => clamp(clampEqFrequency(frequency), minFrequency, responseSampleRate * 0.45);
-  const responseFrequency = (frequency) => clamp(clampEqFrequency(frequency), minFrequency, responseSampleRate * 0.499);
+  const responseFrequency = (frequency) => {
+    const numeric = Number(frequency);
+    const safeFrequency = Number.isFinite(numeric) && numeric > 0 ? numeric : graphMinFrequency;
+    return clamp(safeFrequency, graphMinFrequency, responseSampleRate * 0.499);
+  };
 
   const biquadGainDbAt = (coefficients, frequency) => {
     const omega = (2 * Math.PI * responseFrequency(frequency)) / responseSampleRate;
@@ -1280,6 +1284,14 @@ function EQCurve({
     if (p.type === DESSER_TYPE) return thresholdToDisplayGain(p.threshold);
     return CUT_TYPES.has(p.type) ? cutNodeDisplayGain(getCutResonanceGain(p)) : bandShapeGainAt(p, p.freq);
   };
+  const cutLinkGainAt = (point) => {
+    const p = withBandDefaults(point);
+    if (!CUT_TYPES.has(p.type)) return nodeGainAt(p);
+
+    const cutoffGain = bandShapeGainAt(p, p.freq);
+    const resonanceGain = bandShapeGainAt(p, getCutResonanceFrequency(p));
+    return clamp(Math.max(cutoffGain, resonanceGain, nodeGainAt(p) * 0.94), -30, 30);
+  };
   const gainFromNodeGain = (point, nodeGain) => {
     const p = withBandDefaults(point);
     if (p.type === DESSER_TYPE) return 0;
@@ -1415,7 +1427,7 @@ function EQCurve({
         x: point.x,
         y: Math.min(point.y, floorY)
       };
-      const visible = point.y <= floorY;
+      const visible = point.y < floorY - 0.1;
 
       if (visible) {
         if (!drawing) {
@@ -3048,7 +3060,7 @@ function EQCurve({
           const y = heldNodeVisual ? heldNodeVisual.y : editSurfAnchor ? anchorY : liveY;
           const isCutBand = CUT_TYPES.has(band.type);
           const cutCurveY = isCutBand
-            ? clamp(gainToCurveY(bandShapeGainAt(band, band.freq)), padT, padT + innerH)
+            ? clamp(gainToCurveY(cutLinkGainAt(band)), padT, padT + innerH)
             : y;
           const isDesser = band.type === DESSER_TYPE;
           const showCompArrow = isActive && supportsBandDynamics(band);
