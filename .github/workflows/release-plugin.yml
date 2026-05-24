@@ -24,13 +24,13 @@ jobs:
         include:
           - platform: macOS
             os: macos-14
-            archive: Voxanova-macOS-Installer.zip
+            installer: Voxanova-macOS.pkg
           - platform: Windows
             os: windows-2022
-            archive: Voxanova-Windows-Installer.zip
+            installer: Voxanova-Windows-Setup.exe
           - platform: Linux
             os: ubuntu-24.04
-            archive: Voxanova-Linux-Installer.zip
+            installer: Voxanova-Linux-amd64.deb
 
     steps:
       - name: Checkout
@@ -88,6 +88,11 @@ jobs:
           }
           Install-Package Microsoft.Web.WebView2 -Scope CurrentUser -RequiredVersion 1.0.3485.44 -Source nugetRepository -Force | Out-Null
 
+      - name: Install Windows installer tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
       - name: Configure plugin
         shell: bash
         run: cmake -S Voxanova/plugin-shell -B Voxanova/plugin-shell/build -DCMAKE_BUILD_TYPE=Release -DJUCE_DIR="${GITHUB_WORKSPACE}/JUCE"
@@ -101,25 +106,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export COPYFILE_DISABLE=1
           ROOT="Voxanova/plugin-shell/build/Voxanova_artefacts/Release"
-          PKG="Voxanova-macOS-Installer"
-          mkdir -p "$PKG/Plugins/VST3" "$PKG/Plugins/Components" "$PKG/Standalone"
-          cp -R "$ROOT/VST3/Voxanova.vst3" "$PKG/Plugins/VST3/"
-          cp -R "$ROOT/AU/Voxanova.component" "$PKG/Plugins/Components/"
+          VERSION="$(node -p "require('./Voxanova/package.json').version")"
+          PAYLOAD="Voxanova-macOS-payload"
+          mkdir -p \
+            "$PAYLOAD/Library/Audio/Plug-Ins/VST3" \
+            "$PAYLOAD/Library/Audio/Plug-Ins/Components" \
+            "$PAYLOAD/Applications"
+          ditto "$ROOT/VST3/Voxanova.vst3" "$PAYLOAD/Library/Audio/Plug-Ins/VST3/Voxanova.vst3"
+          ditto "$ROOT/AU/Voxanova.component" "$PAYLOAD/Library/Audio/Plug-Ins/Components/Voxanova.component"
           if [ -d "$ROOT/Standalone/Voxanova.app" ]; then
-            cp -R "$ROOT/Standalone/Voxanova.app" "$PKG/Standalone/"
+            ditto "$ROOT/Standalone/Voxanova.app" "$PAYLOAD/Applications/Voxanova.app"
           fi
-          cat > "$PKG/install-macos.command" <<'SCRIPT'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          cd "$(dirname "$0")"
-          mkdir -p "$HOME/Library/Audio/Plug-Ins/VST3" "$HOME/Library/Audio/Plug-Ins/Components"
-          cp -R "Plugins/VST3/Voxanova.vst3" "$HOME/Library/Audio/Plug-Ins/VST3/"
-          cp -R "Plugins/Components/Voxanova.component" "$HOME/Library/Audio/Plug-Ins/Components/"
-          echo "Voxanova instalado. Reinicia tu DAW si estaba abierto."
-          SCRIPT
-          chmod +x "$PKG/install-macos.command"
-          ditto -c -k --sequesterRsrc "$PKG" "${{ matrix.archive }}"
+          pkgbuild \
+            --root "$PAYLOAD" \
+            --identifier com.voxanova.plugin \
+            --version "$VERSION" \
+            --install-location / \
+            --ownership recommended \
+            "${{ matrix.installer }}"
 
       - name: Package Windows
         if: runner.os == 'Windows'
@@ -127,21 +133,54 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $root = "Voxanova/plugin-shell/build/Voxanova_artefacts/Release"
-          $pkg = "Voxanova-Windows-Installer"
-          New-Item -ItemType Directory -Force "$pkg/Plugins/VST3", "$pkg/Standalone" | Out-Null
-          Copy-Item -Recurse "$root/VST3/Voxanova.vst3" "$pkg/Plugins/VST3/"
+          $version = node -p "require('./Voxanova/package.json').version"
+          $payload = "Voxanova-Windows-payload"
+          New-Item -ItemType Directory -Force "$payload\VST3", "$payload\Standalone" | Out-Null
+          Copy-Item -Recurse "$root\VST3\Voxanova.vst3" "$payload\VST3\"
           if (Test-Path "$root/Standalone/Voxanova.exe") {
-            Copy-Item "$root/Standalone/Voxanova.exe" "$pkg/Standalone/"
+            Copy-Item "$root\Standalone\Voxanova.exe" "$payload\Standalone\"
           }
-          @'
-          $ErrorActionPreference = "Stop"
-          $source = Join-Path $PSScriptRoot "Plugins\VST3\Voxanova.vst3"
-          $target = Join-Path ${env:LOCALAPPDATA} "Programs\Common\VST3"
-          New-Item -ItemType Directory -Force $target | Out-Null
-          Copy-Item -Recurse -Force $source $target
-          Write-Host "Voxanova instalado. Reinicia tu DAW si estaba abierto."
-          '@ | Set-Content -Encoding UTF8 "$pkg/install-windows.ps1"
-          Compress-Archive -Path "$pkg/*" -DestinationPath "${{ matrix.archive }}" -Force
+          $payloadPath = (Resolve-Path $payload).Path
+          $isccCommand = Get-Command iscc.exe -ErrorAction SilentlyContinue
+          $iscc = if ($isccCommand) { $isccCommand.Source } else { $null }
+          if (-not $iscc) {
+            $programFilesX86 = [Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
+            $iscc = Join-Path $programFilesX86 "Inno Setup 6\ISCC.exe"
+          }
+          if (-not (Test-Path $iscc)) {
+            $iscc = Join-Path ${env:ProgramFiles} "Inno Setup 6\ISCC.exe"
+          }
+          @"
+          [Setup]
+          AppId=Voxanova.Plugin
+          AppName=Voxanova
+          AppVersion=$version
+          AppPublisher=Voxanova
+          DefaultDirName={autopf}\Voxanova
+          DefaultGroupName=Voxanova
+          DisableProgramGroupPage=yes
+          OutputDir=.
+          OutputBaseFilename=Voxanova-Windows-Setup
+          Compression=lzma2
+          SolidCompression=yes
+          ArchitecturesAllowed=x64
+          ArchitecturesInstallIn64BitMode=x64
+          PrivilegesRequired=admin
+          WizardStyle=modern
+          UninstallDisplayName=Voxanova
+
+          [Files]
+          Source: "$payloadPath\VST3\Voxanova.vst3\*"; DestDir: "{commoncf}\VST3\Voxanova.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs
+          Source: "$payloadPath\Standalone\Voxanova.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+
+          [Icons]
+          Name: "{group}\Voxanova"; Filename: "{app}\Voxanova.exe"
+          Name: "{commondesktop}\Voxanova"; Filename: "{app}\Voxanova.exe"; Tasks: desktopicon
+
+          [Tasks]
+          Name: "desktopicon"; Description: "Crear acceso directo en el escritorio"; GroupDescription: "Accesos directos:"; Flags: unchecked
+          "@ | Set-Content -Encoding UTF8 "voxanova-installer.iss"
+          & $iscc "voxanova-installer.iss"
 
       - name: Package Linux
         if: runner.os == 'Linux'
@@ -149,28 +188,51 @@ jobs:
         run: |
           set -euo pipefail
           ROOT="Voxanova/plugin-shell/build/Voxanova_artefacts/Release"
-          PKG="Voxanova-Linux-Installer"
-          mkdir -p "$PKG/Plugins/VST3" "$PKG/Standalone"
-          cp -R "$ROOT/VST3/Voxanova.vst3" "$PKG/Plugins/VST3/"
+          VERSION="$(node -p "require('./Voxanova/package.json').version")"
+          DEBROOT="Voxanova-Linux-deb"
+          mkdir -p \
+            "$DEBROOT/DEBIAN" \
+            "$DEBROOT/usr/lib/vst3" \
+            "$DEBROOT/usr/bin" \
+            "$DEBROOT/usr/share/applications" \
+            "$DEBROOT/usr/share/doc/voxanova"
+          cp -R "$ROOT/VST3/Voxanova.vst3" "$DEBROOT/usr/lib/vst3/"
           if [ -f "$ROOT/Standalone/Voxanova" ]; then
-            cp "$ROOT/Standalone/Voxanova" "$PKG/Standalone/"
+            install -m 755 "$ROOT/Standalone/Voxanova" "$DEBROOT/usr/bin/voxanova"
           fi
-          cat > "$PKG/install-linux.sh" <<'SCRIPT'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          cd "$(dirname "$0")"
-          mkdir -p "$HOME/.vst3"
-          cp -R "Plugins/VST3/Voxanova.vst3" "$HOME/.vst3/"
-          echo "Voxanova instalado. Reinicia tu DAW si estaba abierto."
-          SCRIPT
-          chmod +x "$PKG/install-linux.sh"
-          zip -r "${{ matrix.archive }}" "$PKG"
+          cat > "$DEBROOT/usr/share/applications/com.voxanova.Voxanova.desktop" <<'DESKTOP'
+          [Desktop Entry]
+          Name=Voxanova
+          Comment=Vocal chain audio plugin
+          Exec=voxanova
+          Type=Application
+          Categories=Audio;AudioVideo;
+          Terminal=false
+          DESKTOP
+          cat > "$DEBROOT/usr/share/doc/voxanova/README" <<'README'
+          Voxanova installs the VST3 plugin to /usr/lib/vst3.
+          Restart your DAW after installing or upgrading.
+          README
+          cat > "$DEBROOT/DEBIAN/control" <<CONTROL
+          Package: voxanova
+          Version: ${VERSION}
+          Section: sound
+          Priority: optional
+          Architecture: amd64
+          Maintainer: Voxanova <releases@voxanova.local>
+          Depends: libc6, libstdc++6, libgcc-s1, libasound2t64 | libasound2, libcurl4t64 | libcurl4, libfreetype6, libfontconfig1, libgtk-3-0, libwebkit2gtk-4.1-0 | libwebkit2gtk-4.0-37, libx11-6, libxcomposite1, libxcursor1, libxext6, libxinerama1, libxrandr2, libxrender1
+          Description: Voxanova vocal chain audio plugin
+           Voxanova is a vocal chain plugin packaged as VST3 with a standalone app.
+          CONTROL
+          chmod 755 "$DEBROOT/DEBIAN"
+          chmod 644 "$DEBROOT/DEBIAN/control"
+          dpkg-deb --root-owner-group --build "$DEBROOT" "${{ matrix.installer }}"
 
       - name: Upload package artifact
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.platform }} package
-          path: ${{ matrix.archive }}
+          path: ${{ matrix.installer }}
 
   publish:
     name: Publish GitHub release
@@ -210,11 +272,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          RELEASE_NOTES="Instaladores nativos de Voxanova generados por GitHub Actions. Descarga el instalador de tu sistema operativo, abre la ventana del instalador y reinicia tu DAW si estaba abierto."
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" release-packages/*.zip --clobber
+            for old_asset in Voxanova-macOS-Installer.zip Voxanova-Windows-Installer.zip Voxanova-Linux-Installer.zip; do
+              gh release delete-asset "$RELEASE_TAG" "$old_asset" --yes >/dev/null 2>&1 || true
+            done
+            gh release upload "$RELEASE_TAG" release-packages/* --clobber
+            gh release edit "$RELEASE_TAG" --notes "$RELEASE_NOTES"
           else
-            gh release create "$RELEASE_TAG" release-packages/*.zip \
+            gh release create "$RELEASE_TAG" release-packages/* \
               --title "Voxanova ${RELEASE_TAG}" \
               --target "${GITHUB_SHA}" \
-              --notes "Instaladores de Voxanova generados por GitHub Actions. Descarga el ZIP de tu sistema operativo, descomprimelo y ejecuta el instalador incluido."
+              --notes "$RELEASE_NOTES"
           fi

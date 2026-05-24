@@ -16,19 +16,19 @@ type PlatformDownload = {
 
 const platformCopy: Record<Platform, PlatformDownload> = {
   macos: {
-    assetName: "Voxanova-macOS-Installer.zip",
+    assetName: "Voxanova-macOS.pkg",
     label: "macOS",
-    formats: "AU, VST3 y Standalone"
+    formats: "Instalador .pkg: AU, VST3 y app"
   },
   windows: {
-    assetName: "Voxanova-Windows-Installer.zip",
+    assetName: "Voxanova-Windows-Setup.exe",
     label: "Windows",
-    formats: "VST3 y Standalone"
+    formats: "Instalador .exe: VST3 y app"
   },
   linux: {
-    assetName: "Voxanova-Linux-Installer.zip",
+    assetName: "Voxanova-Linux-amd64.deb",
     label: "Linux",
-    formats: "VST3 y Standalone"
+    formats: "Paquete .deb: VST3 y app"
   }
 };
 
@@ -90,7 +90,7 @@ function App() {
             </a>
           </div>
           <p className="download-note" aria-live="polite">
-            Baja directo a tu carpeta de Descargas: {selectedDownload.assetName}
+            Baja el instalador a Descargas. Ábrelo y la ventana instala Voxanova en las carpetas correctas.
           </p>
         </div>
 
@@ -136,9 +136,9 @@ function App() {
         </div>
 
         <div className="release-strip">
-          <span>El boton descarga el instalador publicado en la ultima release.</span>
+          <span>Sin copias manuales: el instalador coloca el plugin donde tu DAW lo espera.</span>
           <a href={installerUrl} download={selectedDownload.assetName} rel="noreferrer">
-            Descargar {selectedDownload.label}
+            Descargar {selectedDownload.assetName}
           </a>
         </div>
       </section>
