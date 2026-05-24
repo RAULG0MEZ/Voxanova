@@ -204,5 +204,6 @@ jobs:
           else
             gh release create "$RELEASE_TAG" release-packages/*.zip \
               --title "Voxanova ${RELEASE_TAG}" \
+              --target "${GITHUB_SHA}" \
               --notes "Instaladores de Voxanova generados por GitHub Actions. Descarga el ZIP de tu sistema operativo, descomprimelo y ejecuta el instalador incluido."
           fi
