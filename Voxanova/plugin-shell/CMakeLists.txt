@@ -57,6 +57,7 @@ target_compile_features(Voxanova PRIVATE cxx_std_20)
 target_compile_definitions(Voxanova
   PUBLIC
     JUCE_VST3_CAN_REPLACE_VST2=0
+    $<$<PLATFORM_ID:Windows>:JUCE_USE_WIN_WEBVIEW2_WITH_STATIC_LINKING=1>
 )
 
 target_link_libraries(Voxanova
