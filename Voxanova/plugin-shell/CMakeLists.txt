@@ -7,6 +7,12 @@ endif()
 
 add_subdirectory(${JUCE_DIR} JUCE)
 
+set(VOXANOVA_PLUGIN_FORMATS VST3 Standalone)
+
+if(APPLE)
+  list(PREPEND VOXANOVA_PLUGIN_FORMATS AU)
+endif()
+
 juce_add_plugin(Voxanova
   COMPANY_NAME "Voxanova"
   BUNDLE_ID com.voxanova.vocalchain
@@ -20,7 +26,7 @@ juce_add_plugin(Voxanova
   PLUGIN_CODE VxCh
   # VST3 and AU are the production targets. Legacy VST2 requires Steinberg's
   # discontinued VST2 SDK/license and is intentionally not enabled by default.
-  FORMATS AU VST3 Standalone
+  FORMATS ${VOXANOVA_PLUGIN_FORMATS}
   PRODUCT_NAME "Voxanova"
 )
 

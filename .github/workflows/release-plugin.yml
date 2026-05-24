@@ -1,0 +1,208 @@
+name: Build plugin release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag. Empty uses package.json version."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macOS
+            os: macos-14
+            archive: Voxanova-macOS.zip
+          - platform: Windows
+            os: windows-latest
+            archive: Voxanova-Windows.zip
+          - platform: Linux
+            os: ubuntu-24.04
+            archive: Voxanova-Linux.zip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: Voxanova/package-lock.json
+
+      - name: Install web dependencies
+        working-directory: Voxanova
+        run: npm ci
+
+      - name: Build embedded web UI
+        working-directory: Voxanova
+        run: npm run build
+
+      - name: Install Linux build packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev \
+            libcurl4-openssl-dev \
+            libfreetype6-dev \
+            libfontconfig1-dev \
+            libgtk-3-dev \
+            libjack-jackd2-dev \
+            libwebkit2gtk-4.1-dev \
+            libx11-dev \
+            libxcomposite-dev \
+            libxcursor-dev \
+            libxext-dev \
+            libxinerama-dev \
+            libxrandr-dev \
+            libxrender-dev \
+            ladspa-sdk \
+            mesa-common-dev
+
+      - name: Download JUCE
+        shell: bash
+        run: git clone --depth 1 --branch 8.0.13 https://github.com/juce-framework/JUCE.git JUCE
+
+      - name: Configure plugin
+        shell: bash
+        run: cmake -S Voxanova/plugin-shell -B Voxanova/plugin-shell/build -DCMAKE_BUILD_TYPE=Release -DJUCE_DIR="${GITHUB_WORKSPACE}/JUCE"
+
+      - name: Build plugin
+        shell: bash
+        run: cmake --build Voxanova/plugin-shell/build --config Release --parallel
+
+      - name: Package macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="Voxanova/plugin-shell/build/Voxanova_artefacts/Release"
+          PKG="package"
+          mkdir -p "$PKG/Plugins/VST3" "$PKG/Plugins/Components" "$PKG/Standalone"
+          cp -R "$ROOT/VST3/Voxanova.vst3" "$PKG/Plugins/VST3/"
+          cp -R "$ROOT/AU/Voxanova.component" "$PKG/Plugins/Components/"
+          if [ -d "$ROOT/Standalone/Voxanova.app" ]; then
+            cp -R "$ROOT/Standalone/Voxanova.app" "$PKG/Standalone/"
+          fi
+          cat > "$PKG/install-macos.command" <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          cd "$(dirname "$0")"
+          mkdir -p "$HOME/Library/Audio/Plug-Ins/VST3" "$HOME/Library/Audio/Plug-Ins/Components"
+          cp -R "Plugins/VST3/Voxanova.vst3" "$HOME/Library/Audio/Plug-Ins/VST3/"
+          cp -R "Plugins/Components/Voxanova.component" "$HOME/Library/Audio/Plug-Ins/Components/"
+          echo "Voxanova instalado. Reinicia tu DAW si estaba abierto."
+          SCRIPT
+          chmod +x "$PKG/install-macos.command"
+          ditto -c -k --sequesterRsrc "$PKG" "${{ matrix.archive }}"
+
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $root = "Voxanova/plugin-shell/build/Voxanova_artefacts/Release"
+          $pkg = "package"
+          New-Item -ItemType Directory -Force "$pkg/Plugins/VST3", "$pkg/Standalone" | Out-Null
+          Copy-Item -Recurse "$root/VST3/Voxanova.vst3" "$pkg/Plugins/VST3/"
+          if (Test-Path "$root/Standalone/Voxanova.exe") {
+            Copy-Item "$root/Standalone/Voxanova.exe" "$pkg/Standalone/"
+          }
+          @'
+          $ErrorActionPreference = "Stop"
+          $source = Join-Path $PSScriptRoot "Plugins\VST3\Voxanova.vst3"
+          $target = Join-Path ${env:LOCALAPPDATA} "Programs\Common\VST3"
+          New-Item -ItemType Directory -Force $target | Out-Null
+          Copy-Item -Recurse -Force $source $target
+          Write-Host "Voxanova instalado. Reinicia tu DAW si estaba abierto."
+          '@ | Set-Content -Encoding UTF8 "$pkg/install-windows.ps1"
+          Compress-Archive -Path "$pkg/*" -DestinationPath "${{ matrix.archive }}" -Force
+
+      - name: Package Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="Voxanova/plugin-shell/build/Voxanova_artefacts/Release"
+          PKG="package"
+          mkdir -p "$PKG/Plugins/VST3" "$PKG/Standalone"
+          cp -R "$ROOT/VST3/Voxanova.vst3" "$PKG/Plugins/VST3/"
+          if [ -f "$ROOT/Standalone/Voxanova" ]; then
+            cp "$ROOT/Standalone/Voxanova" "$PKG/Standalone/"
+          fi
+          cat > "$PKG/install-linux.sh" <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          cd "$(dirname "$0")"
+          mkdir -p "$HOME/.vst3"
+          cp -R "Plugins/VST3/Voxanova.vst3" "$HOME/.vst3/"
+          echo "Voxanova instalado. Reinicia tu DAW si estaba abierto."
+          SCRIPT
+          chmod +x "$PKG/install-linux.sh"
+          zip -r "${{ matrix.archive }}" "$PKG"
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }} package
+          path: ${{ matrix.archive }}
+
+  publish:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          path: release-packages
+          pattern: "* package"
+          merge-multiple: true
+
+      - name: Resolve release tag
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            TAG="${GITHUB_REF_NAME}"
+          elif [ -n "${{ inputs.tag }}" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            VERSION="$(node -p "require('./Voxanova/package.json').version")"
+            TAG="v${VERSION}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release-packages/*.zip --clobber
+          else
+            gh release create "$RELEASE_TAG" release-packages/*.zip \
+              --title "Voxanova ${RELEASE_TAG}" \
+              --notes "Paquetes instalables de Voxanova generados por GitHub Actions."
+          fi

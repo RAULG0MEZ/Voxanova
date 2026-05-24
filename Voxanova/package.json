@@ -6,10 +6,12 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:site": "vite build --config vite.site.config.ts && node tools/prepare_site_index.mjs",
     "preview": "vite preview",
+    "preview:site": "vite preview --config vite.site.config.ts --host 0.0.0.0",
     "lint": "eslint src",
     "lint:fix": "eslint src --fix",
-    "format": "prettier --write \"src/**/*.{js,jsx,css,json}\""
+    "format": "prettier --write \"src/**/*.{js,jsx,ts,tsx,css,json}\" \"*.ts\""
   },
   "dependencies": {
     "react": "^18.3.1",
@@ -17,12 +19,15 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
+    "@types/react": "^19.2.15",
+    "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^4.4.1",
     "eslint": "^9.39.4",
     "eslint-plugin-react": "^7.37.5",
     "eslint-plugin-react-hooks": "^7.1.1",
     "globals": "^17.5.0",
     "prettier": "^3.8.3",
+    "typescript": "^6.0.3",
     "vite": "^5.4.12"
   }
 }

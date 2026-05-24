@@ -17,7 +17,9 @@ npm run dev        # abre el diseño en http://localhost:5173
 ```bash
 npm run dev        # servidor de desarrollo en localhost:5173
 npm run build      # genera la versión de producción en dist/
+npm run build:site # genera la landing page en site-dist/
 npm run preview    # previsualiza el build
+npm run preview:site # previsualiza la landing page
 npm run lint       # revisa el código en busca de errores
 npm run lint:fix   # arregla automáticamente lo que pueda
 npm run format     # formatea todo el código con Prettier
@@ -32,6 +34,7 @@ npm run format     # formatea todo el código con Prettier
 Voxanova/
 ├── src/                  # UI React v2 limpia
 │   ├── main.jsx          # Punto de entrada
+│   ├── landing/          # Landing page pública para GitHub Pages
 │   ├── App.jsx           # Componente raíz y controles
 │   ├── nativeBridge.js   # Comunicación UI -> JUCE
 │   ├── pluginContract.js # Parámetros, defaults y listas compartidas
@@ -42,9 +45,20 @@ Voxanova/
 ├── eslint.config.js      # Reglas del linter
 ├── .prettierrc.json      # Reglas del formateador
 ├── index.html            # HTML base que carga React
+├── landing.html          # HTML base de la landing page
 ├── vite.config.js        # Configuración del servidor de desarrollo
+├── vite.site.config.ts   # Configuración de build para la landing
 └── package.json
 ```
+
+## Publicación y descargas
+
+- `.github/workflows/deploy-site.yml` compila `npm run build:site` y publica la
+  landing en GitHub Pages.
+- `.github/workflows/release-plugin.yml` compila el plugin en macOS, Windows y
+  Linux cuando empujas un tag `v*` o corres el workflow manualmente.
+- La landing busca la última release de GitHub y manda el botón principal al ZIP
+  correcto según el sistema operativo del visitante.
 
 ## Estado actual
 
