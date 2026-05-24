@@ -129,6 +129,7 @@ VoxanovaAudioProcessorEditor::VoxanovaAudioProcessorEditor(VoxanovaAudioProcesso
     : juce::AudioProcessorEditor(&p),
       audioProcessor(p),
       webView(juce::WebBrowserComponent::Options {}
+                  .withBackend(juce::WebBrowserComponent::Options::Backend::webview2)
                   .withKeepPageLoadedWhenBrowserIsHidden()
                   .withNativeIntegrationEnabled()
                   .withEventListener("voxanovaSetParameter", [this](const juce::var& payload) {
