@@ -1,44 +1,34 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import pluginPanelUrl from "../assets/real-theme-bg.png";
 import "./styles.css";
 
 const REPOSITORY = "RAULG0MEZ/Voxanova";
 const RELEASES_URL = `https://github.com/${REPOSITORY}/releases/latest`;
-const API_RELEASE_URL = `https://api.github.com/repos/${REPOSITORY}/releases/latest`;
 
 type Platform = "macos" | "windows" | "linux";
 
-type ReleaseAsset = {
-  name: string;
-  browser_download_url: string;
+type PlatformDownload = {
+  assetName: string;
+  formats: string;
+  label: string;
 };
 
-type ReleaseResponse = {
-  tag_name?: string;
-  assets?: ReleaseAsset[];
-};
-
-type DownloadState =
-  | { status: "loading"; label: string; href: string; assetName?: string }
-  | { status: "ready"; label: string; href: string; assetName: string; version?: string }
-  | { status: "fallback"; label: string; href: string; assetName?: string };
-
-const platformCopy: Record<Platform, { label: string; formats: string; matcher: RegExp }> = {
+const platformCopy: Record<Platform, PlatformDownload> = {
   macos: {
+    assetName: "Voxanova-macOS-Installer.zip",
     label: "macOS",
-    formats: "AU, VST3 y Standalone",
-    matcher: /macos|darwin|apple/i
+    formats: "AU, VST3 y Standalone"
   },
   windows: {
+    assetName: "Voxanova-Windows-Installer.zip",
     label: "Windows",
-    formats: "VST3 y Standalone",
-    matcher: /windows|win64|win/i
+    formats: "VST3 y Standalone"
   },
   linux: {
+    assetName: "Voxanova-Linux-Installer.zip",
     label: "Linux",
-    formats: "VST3 y Standalone",
-    matcher: /linux/i
+    formats: "VST3 y Standalone"
   }
 };
 
@@ -54,71 +44,15 @@ function detectPlatform(): Platform {
   return "macos";
 }
 
-async function resolveReleaseAsset(platform: Platform): Promise<DownloadState> {
-  const response = await fetch(API_RELEASE_URL, {
-    headers: {
-      Accept: "application/vnd.github+json"
-    }
-  });
-
-  if (!response.ok) {
-    throw new Error(`GitHub release lookup failed: ${response.status}`);
-  }
-
-  const release = (await response.json()) as ReleaseResponse;
-  const asset = release.assets?.find((candidate) =>
-    platformCopy[platform].matcher.test(candidate.name)
-  );
-
-  if (!asset) {
-    throw new Error(`No release asset found for ${platform}`);
-  }
-
-  return {
-    status: "ready",
-    label: `Descargar para ${platformCopy[platform].label}`,
-    href: asset.browser_download_url,
-    assetName: asset.name,
-    version: release.tag_name
-  };
+function getInstallerUrl(platform: Platform) {
+  return `https://github.com/${REPOSITORY}/releases/latest/download/${platformCopy[platform].assetName}`;
 }
 
 function App() {
   const detectedPlatform = useMemo(detectPlatform, []);
   const [selectedPlatform, setSelectedPlatform] = useState<Platform>(detectedPlatform);
-  const [download, setDownload] = useState<DownloadState>({
-    status: "loading",
-    label: `Buscando descarga para ${platformCopy[detectedPlatform].label}`,
-    href: RELEASES_URL
-  });
-
-  useEffect(() => {
-    let cancelled = false;
-
-    setDownload({
-      status: "loading",
-      label: `Buscando descarga para ${platformCopy[selectedPlatform].label}`,
-      href: RELEASES_URL
-    });
-
-    resolveReleaseAsset(selectedPlatform)
-      .then((asset) => {
-        if (!cancelled) setDownload(asset);
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setDownload({
-            status: "fallback",
-            label: "Abrir descargas en GitHub",
-            href: RELEASES_URL
-          });
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedPlatform]);
+  const selectedDownload = platformCopy[selectedPlatform];
+  const installerUrl = getInstallerUrl(selectedPlatform);
 
   return (
     <main>
@@ -143,21 +77,20 @@ function App() {
             cruda a voz lista sin perder el flow.
           </p>
           <div className="hero-actions" aria-label="Descargas principales">
-            <a className="download-button" href={download.href}>
-              {download.label}
-            </a>
             <a
-              className="secondary-button"
-              href={`https://github.com/${REPOSITORY}`}
+              className="download-button"
+              href={installerUrl}
+              download={selectedDownload.assetName}
               rel="noreferrer"
             >
-              Ver repo
+              Descargar instalador para {selectedDownload.label}
+            </a>
+            <a className="secondary-button" href={RELEASES_URL} rel="noreferrer">
+              Ver descargas
             </a>
           </div>
           <p className="download-note" aria-live="polite">
-            {download.status === "ready"
-              ? `${download.assetName}${download.version ? ` - ${download.version}` : ""}`
-              : "Si todavia no hay release publicada, el boton abre la pagina de descargas."}
+            Baja directo a tu carpeta de Descargas: {selectedDownload.assetName}
           </p>
         </div>
 
@@ -180,7 +113,7 @@ function App() {
       <section className="download-section" id="download">
         <div className="section-heading">
           <p className="eyebrow">Descarga directa</p>
-          <h2>Un ZIP para cada computadora</h2>
+          <h2>Un instalador para cada computadora</h2>
         </div>
 
         <div className="platform-grid">
@@ -203,9 +136,9 @@ function App() {
         </div>
 
         <div className="release-strip">
-          <span>GitHub Actions compila los paquetes de release.</span>
-          <a href={download.href}>
-            {download.status === "ready" ? "Bajar paquete seleccionado" : "Ver releases"}
+          <span>El boton descarga el instalador publicado en la ultima release.</span>
+          <a href={installerUrl} download={selectedDownload.assetName} rel="noreferrer">
+            Descargar {selectedDownload.label}
           </a>
         </div>
       </section>

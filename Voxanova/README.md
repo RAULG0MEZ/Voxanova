@@ -57,8 +57,8 @@ Voxanova/
   landing en GitHub Pages.
 - `.github/workflows/release-plugin.yml` compila el plugin en macOS, Windows y
   Linux cuando empujas un tag `v*` o corres el workflow manualmente.
-- La landing busca la última release de GitHub y manda el botón principal al ZIP
-  correcto según el sistema operativo del visitante.
+- La landing manda el botón principal directo al instalador ZIP de la última
+  release según el sistema operativo del visitante.
 
 ## Estado actual
 

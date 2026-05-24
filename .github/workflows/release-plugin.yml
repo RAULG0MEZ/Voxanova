@@ -24,13 +24,13 @@ jobs:
         include:
           - platform: macOS
             os: macos-14
-            archive: Voxanova-macOS.zip
+            archive: Voxanova-macOS-Installer.zip
           - platform: Windows
             os: windows-latest
-            archive: Voxanova-Windows.zip
+            archive: Voxanova-Windows-Installer.zip
           - platform: Linux
             os: ubuntu-24.04
-            archive: Voxanova-Linux.zip
+            archive: Voxanova-Linux-Installer.zip
 
     steps:
       - name: Checkout
@@ -91,7 +91,7 @@ jobs:
         run: |
           set -euo pipefail
           ROOT="Voxanova/plugin-shell/build/Voxanova_artefacts/Release"
-          PKG="package"
+          PKG="Voxanova-macOS-Installer"
           mkdir -p "$PKG/Plugins/VST3" "$PKG/Plugins/Components" "$PKG/Standalone"
           cp -R "$ROOT/VST3/Voxanova.vst3" "$PKG/Plugins/VST3/"
           cp -R "$ROOT/AU/Voxanova.component" "$PKG/Plugins/Components/"
@@ -116,7 +116,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $root = "Voxanova/plugin-shell/build/Voxanova_artefacts/Release"
-          $pkg = "package"
+          $pkg = "Voxanova-Windows-Installer"
           New-Item -ItemType Directory -Force "$pkg/Plugins/VST3", "$pkg/Standalone" | Out-Null
           Copy-Item -Recurse "$root/VST3/Voxanova.vst3" "$pkg/Plugins/VST3/"
           if (Test-Path "$root/Standalone/Voxanova.exe") {
@@ -138,7 +138,7 @@ jobs:
         run: |
           set -euo pipefail
           ROOT="Voxanova/plugin-shell/build/Voxanova_artefacts/Release"
-          PKG="package"
+          PKG="Voxanova-Linux-Installer"
           mkdir -p "$PKG/Plugins/VST3" "$PKG/Standalone"
           cp -R "$ROOT/VST3/Voxanova.vst3" "$PKG/Plugins/VST3/"
           if [ -f "$ROOT/Standalone/Voxanova" ]; then
@@ -204,5 +204,5 @@ jobs:
           else
             gh release create "$RELEASE_TAG" release-packages/*.zip \
               --title "Voxanova ${RELEASE_TAG}" \
-              --notes "Paquetes instalables de Voxanova generados por GitHub Actions."
+              --notes "Instaladores de Voxanova generados por GitHub Actions. Descarga el ZIP de tu sistema operativo, descomprimelo y ejecuta el instalador incluido."
           fi
