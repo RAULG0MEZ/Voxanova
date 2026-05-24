@@ -26,7 +26,7 @@ jobs:
             os: macos-14
             archive: Voxanova-macOS-Installer.zip
           - platform: Windows
-            os: windows-latest
+            os: windows-2022
             archive: Voxanova-Windows-Installer.zip
           - platform: Linux
             os: ubuntu-24.04
@@ -76,6 +76,17 @@ jobs:
       - name: Download JUCE
         shell: bash
         run: git clone --depth 1 --branch 8.0.13 https://github.com/juce-framework/JUCE.git JUCE
+
+      - name: Install WebView2 package
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Get-PackageProvider -Name NuGet -ForceBootstrap | Out-Null
+          if (-not (Get-PackageSource -Name nugetRepository -ErrorAction SilentlyContinue)) {
+            Register-PackageSource -ProviderName NuGet -Name nugetRepository -Location https://www.nuget.org/api/v2 -Trusted -Force | Out-Null
+          }
+          Install-Package Microsoft.Web.WebView2 -Scope CurrentUser -RequiredVersion 1.0.3485.44 -Source nugetRepository -Force | Out-Null
 
       - name: Configure plugin
         shell: bash
